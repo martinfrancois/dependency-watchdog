@@ -3,12 +3,11 @@
 Instructions for coding agents, and for anyone else who finds them useful. Most of these exist
 because something went wrong once; the reason is recorded so the rule is not followed blindly.
 
-## Treat this project as open source now
+## This project is open source
 
-Agents MUST treat this repository as public open-source software, even while its GitHub visibility
-is private and before its first public release. Code, documentation, examples, test fixtures, agent
-instructions, commit messages, issues and pull requests MUST be safe to publish. Private repository
-visibility is not an exception.
+This repository is public. Code, documentation, examples, test fixtures, agent instructions, commit
+messages, issues and pull requests MUST be safe to publish. A private fork or clone is not an
+exception, because anything that reaches it can reach upstream.
 
 Use generic examples and operator-supplied configuration for installation-specific settings.
 Credentials, private hostnames and IP addresses, homelab topology, actual installation paths,
@@ -137,6 +136,13 @@ These are conventions rather than correctness, but follow them.
 
 ## Testing changes here
 
+Before running any entry point from a checkout, point it at an empty scratch directory, so the run
+never reads the operator's real configuration:
+
+```bash
+export DEP_WATCHDOG_CONFIG_DIR="$(mktemp -d)"
+```
+
 ```bash
 npm test                          # unit tests, fails below 80% lines, branches and functions
 npm run typecheck                 # tsc --noEmit, strict
@@ -149,12 +155,8 @@ tool to keep in step and no way to pass locally while failing in CI. If a change
 threshold, the fix is a test for the logic, not a wider exclusion. The one place that judgement was
 already exercised is recorded above.
 
-Both dry runs are safe against real repositories and are the fastest way to check a change. Use a
-throwaway config to test against repositories you do not own:
-
-```bash
-DEP_WATCHDOG_CONFIG_DIR=/tmp/test-cfg node src/cli-watchdog.ts --dry-run
-```
+Both dry runs are safe against real repositories and are the fastest way to check a change. To test
+against repositories you do not own, put a throwaway `config.json` in that scratch directory.
 
 Before changing anything that writes: confirm the outcome invariant in `pruneRepo` still fails when
 given a deliberately broken edit. A guard that cannot fail is not a guard.

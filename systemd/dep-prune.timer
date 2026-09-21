@@ -3,7 +3,8 @@ Description=Prune matured release-age exclusions weekly
 Documentation=https://github.com/martinfrancois/dependency-watchdog
 
 [Timer]
-# Thursday, so the list is clean before Friday's lockFileMaintenance window rewrites the lockfiles.
+# Weekly. Schedule it ahead of the watched repositories' lockFileMaintenance window, so the list
+# is clean before the lockfiles are rewritten.
 OnCalendar=Thu *-*-* 08:00:00
 Persistent=true
 RandomizedDelaySec=15min
