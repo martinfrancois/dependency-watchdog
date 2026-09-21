@@ -11,6 +11,7 @@ Type=oneshot
 ExecStart=/usr/bin/env node __REPO_DIR__/src/cli-watchdog.ts
 # gh reads its token from here, so the unit needs the real HOME rather than a private one.
 Environment=HOME=%h
+Environment=DEP_WATCHDOG_CONFIG_DIR=__CONFIG_DIR__
 # The node that runs this and the pnpm it shells out to must be the same toolchain. A user
 # systemd unit inherits a bare PATH with neither, so version managers like mise, nvm, asdf
 # and fnm are invisible to it. install.sh substitutes the directory holding the node it

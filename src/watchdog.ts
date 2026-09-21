@@ -2,7 +2,7 @@
 import { mkdirSync, readFileSync, writeFileSync, renameSync } from "node:fs";
 import path from "node:path";
 
-import { loadSecrets, loadSettings, statePath } from "./config.ts";
+import { ConfigDirUnset, loadSecrets, loadSettings, statePath } from "./config.ts";
 import { inspect, deliver, safeError, type Report } from "./diagnostics.ts";
 import { pingHealthchecks, sendTelegram } from "./notify.ts";
 import { enqueue, rememberRecoverySettings } from "./recovery-store.ts";
@@ -167,7 +167,8 @@ export async function runWatchdog(): Promise<void> {
 
 export async function handleFailure(error: unknown): Promise<void> {
   console.error(safeError(error));
-  if (!isReadOnly()) {
+  // Without a configuration directory there is no channel to notify and no heartbeat to fail.
+  if (!isReadOnly() && !(error instanceof ConfigDirUnset)) {
     if (process.env.DEP_WATCHDOG_RECOVERY !== "1") {
       try {
         const settings = loadSettings().recovery;

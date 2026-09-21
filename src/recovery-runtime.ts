@@ -2,7 +2,7 @@ import { execFile, spawn } from "node:child_process";
 import { createWriteStream, existsSync, mkdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { promisify } from "node:util";
-import { loadSettings, loadSecrets } from "./config.ts";
+import { ConfigDirUnset, loadSettings, loadSecrets } from "./config.ts";
 import { safeError } from "./diagnostics.ts";
 import { sendTelegram } from "./notify.ts";
 import { RESULT_SCHEMA, recoveryPrompt, statusMessage, type Incident, type RecoveryResult } from "./recovery.ts";
@@ -164,7 +164,8 @@ function readRecoverySettings(): RecoverySettings {
     const settings = loadSettings().recovery;
     rememberRecoverySettings(settings);
     return settings;
-  } catch {
+  } catch (error) {
+    if (error instanceof ConfigDirUnset) throw error;
     return rememberedRecoverySettings();
   }
 }
