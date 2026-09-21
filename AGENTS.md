@@ -144,8 +144,8 @@ export DEP_WATCHDOG_CONFIG_DIR="$(mktemp -d)"
 ```
 
 ```bash
-npm test                          # unit tests, fails below 80% lines, branches and functions
-npm run typecheck                 # tsc --noEmit, strict
+pnpm test                         # unit tests, fails below 80% lines, branches and functions
+pnpm run typecheck                # tsc --noEmit, strict
 node src/cli-watchdog.ts --dry-run   # reports, notifies nothing, writes no state
 node src/cli-prune.ts --dry-run      # reports, touches no repository
 ```
