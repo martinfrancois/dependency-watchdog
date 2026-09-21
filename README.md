@@ -58,10 +58,14 @@ intended: a blind watchdog must not look healthy.
 ### 2. Settings
 
 ```bash
+export DEP_WATCHDOG_CONFIG_DIR=~/.config/dep-watchdog
 mkdir -p ~/.config/dep-watchdog
 cp config.example.json ~/.config/dep-watchdog/config.json
 $EDITOR ~/.config/dep-watchdog/config.json
 ```
+
+The jobs read the directory from that variable only and refuse to start without it. `install.sh`
+writes it into the units, defaulting to the path above.
 
 Only `repos` is required. Repositories are listed rather than discovered from an account, so that a
 rename or transfer surfaces as a failing lookup instead of silently dropping out of coverage.
@@ -267,6 +271,8 @@ node src/cli-watchdog.ts --dry-run
 node src/cli-watchdog.ts --json > /var/tmp/watchdog-report.json
 node src/cli-prune.ts --dry-run
 ```
+
+Set `DEP_WATCHDOG_CONFIG_DIR` in the shell first, as in step 2.
 
 Both watchdog inspection modes are read-only, including on failure. They send no Telegram messages
 or healthchecks pings and write no state. Text output includes every finding, including suppressed

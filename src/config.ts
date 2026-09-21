@@ -12,9 +12,16 @@ import path from "node:path";
  * lets a caller point it somewhere else between calls.
  */
 export function configDir(): string {
+  const dir = process.env.DEP_WATCHDOG_CONFIG_DIR;
+  if (dir) return dir;
   const xdgConfig = process.env.XDG_CONFIG_HOME || path.join(homedir(), ".config");
-  return process.env.DEP_WATCHDOG_CONFIG_DIR || path.join(xdgConfig, "dep-watchdog");
+  throw new ConfigDirUnset(
+    `DEP_WATCHDOG_CONFIG_DIR is not set. Point it at the directory holding config.json and ` +
+      `config.env, for example ${path.join(xdgConfig, "dep-watchdog")}.`,
+  );
 }
+
+export class ConfigDirUnset extends Error {}
 
 export function secretsPath(): string {
   return path.join(configDir(), "config.env");

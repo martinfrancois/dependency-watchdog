@@ -15,6 +15,7 @@ REPO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 CONFIG_DIR="${DEP_WATCHDOG_CONFIG_DIR:-${XDG_CONFIG_HOME:-$HOME/.config}/dep-watchdog}"
 SECRETS="$CONFIG_DIR/config.env"
 SETTINGS="$CONFIG_DIR/config.json"
+export DEP_WATCHDOG_CONFIG_DIR="$CONFIG_DIR"
 UNIT_DIR="${XDG_CONFIG_HOME:-$HOME/.config}/systemd/user"
 
 say() { printf '  %s\n' "$*"; }
@@ -67,10 +68,10 @@ say "dry run ..."
 node "$REPO_DIR/src/cli-watchdog.ts" --dry-run >/dev/null || die "Dry run failed. Not installing."
 say "dry run ok"
 
-# Units, with the repository path substituted so the checkout can live anywhere.
+# Units, with the repository and config paths substituted so both can live anywhere.
 mkdir -p "$UNIT_DIR"
 for unit in "$REPO_DIR"/systemd/*.service "$REPO_DIR"/systemd/*.timer; do
-  sed -e "s|__REPO_DIR__|$REPO_DIR|g" -e "s|__NODE_BIN__|$NODE_BIN|g" "$unit" > "$UNIT_DIR/$(basename "$unit")"
+  sed -e "s|__REPO_DIR__|$REPO_DIR|g" -e "s|__NODE_BIN__|$NODE_BIN|g" -e "s|__CONFIG_DIR__|$CONFIG_DIR|g" "$unit" > "$UNIT_DIR/$(basename "$unit")"
   chmod 0644 "$UNIT_DIR/$(basename "$unit")"
 done
 systemctl --user daemon-reload

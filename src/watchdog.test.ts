@@ -1,7 +1,8 @@
 import test, { describe } from "node:test";
 import assert from "node:assert/strict";
 
-import { decideNotifications, loadState, render, saveState, saveReport } from "./watchdog.ts";
+import { decideNotifications, handleFailure, loadState, render, saveState, saveReport } from "./watchdog.ts";
+import { ConfigDirUnset } from "./config.ts";
 import type { Finding, State } from "./types.ts";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -341,4 +342,37 @@ test("writes parseable watchdog and prune reports and rejects malformed state sh
     else process.env.XDG_STATE_HOME = prior;
     rmSync(dir, { recursive: true, force: true });
   }
+});
+
+describe("handleFailure", () => {
+  function capture(): { lines: string[]; restore: () => void } {
+    const lines: string[] = [];
+    const original = console.error;
+    console.error = (...args: unknown[]) => { lines.push(args.map(String).join(" ")); };
+    return { lines, restore: () => { console.error = original; } };
+  }
+
+  test("reports a missing configuration directory once and stops", async () => {
+    delete process.env.DEP_WATCHDOG_CONFIG_DIR;
+    const { lines, restore } = capture();
+    try {
+      await handleFailure(new ConfigDirUnset("DEP_WATCHDOG_CONFIG_DIR is not set."));
+    } finally {
+      restore();
+    }
+    assert.equal(process.exitCode, 1);
+    process.exitCode = 0;
+    assert.deepEqual(lines, ["DEP_WATCHDOG_CONFIG_DIR is not set."]);
+  });
+
+  test("negative control: any other failure still tries to reach the operator", async () => {
+    delete process.env.DEP_WATCHDOG_CONFIG_DIR;
+    const { restore } = capture();
+    try {
+      await assert.rejects(handleFailure(new Error("something else")), ConfigDirUnset);
+    } finally {
+      restore();
+      process.exitCode = 0;
+    }
+  });
 });

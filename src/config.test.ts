@@ -61,6 +61,15 @@ describe("loadSettings", () => {
     assert.equal(s.checks.securityPrs, true);
   });
 
+  test("refuses to guess a directory when the variable is unset or empty", () => {
+    for (const value of [undefined, ""]) {
+      if (value === undefined) delete process.env.DEP_WATCHDOG_CONFIG_DIR;
+      else process.env.DEP_WATCHDOG_CONFIG_DIR = value;
+      assert.throws(() => cfg.loadSettings(), cfg.ConfigDirUnset);
+      assert.throws(() => cfg.loadSecrets(), /DEP_WATCHDOG_CONFIG_DIR is not set\. Point it at .*dep-watchdog\./);
+    }
+  });
+
   test("explains itself when there is no settings file", () => {
     const m = loadWith({});
     assert.throws(() => m.loadSettings(), /Copy config.example.json/);
