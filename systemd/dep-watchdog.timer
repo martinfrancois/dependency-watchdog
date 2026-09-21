@@ -1,0 +1,14 @@
+[Unit]
+Description=Run the dependency watchdog daily
+Documentation=https://github.com/martinfrancois/dependency-watchdog
+
+[Timer]
+# Mid-morning, so a problem found overnight reaches you at a time you can act on it.
+OnCalendar=*-*-* 09:00:00
+# The box is not always on. Without this a missed window is simply skipped, and the watchdog is
+# silent for a day, which is indistinguishable from healthy.
+Persistent=true
+RandomizedDelaySec=10min
+
+[Install]
+WantedBy=timers.target

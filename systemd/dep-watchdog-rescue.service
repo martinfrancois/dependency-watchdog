@@ -1,0 +1,15 @@
+[Unit]
+Description=Queue recovery after the watchdog service fails
+After=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/env node __REPO_DIR__/src/cli-recovery.ts --watchdog-failure
+Environment=HOME=%h
+Environment=PATH=__NODE_BIN__:%h/.local/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin
+Environment=DEP_WATCHDOG_RECOVERY=1
+TimeoutStartSec=6h
+KillMode=control-group
+UMask=0077
+NoNewPrivileges=true
+RestrictSUIDSGID=true

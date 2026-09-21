@@ -1,0 +1,22 @@
+{
+  "name": "dependency-watchdog",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Reports when Renovate automation has stopped working, and prunes matured release-age exclusions.",
+  "license": "MIT",
+  "engines": {
+    "node": ">=24"
+  },
+  "scripts": {
+    "watchdog": "node src/cli-watchdog.ts",
+    "prune": "node src/cli-prune.ts",
+    "typecheck": "tsc --noEmit",
+    "test": "node --test --experimental-test-coverage --test-coverage-lines=80 --test-coverage-branches=80 --test-coverage-functions=80 --test-coverage-exclude='**/*.test.ts' --test-coverage-exclude='src/cli-*.ts' 'src/**/*.test.ts'",
+    "test:watch": "node --test --watch 'src/**/*.test.ts'"
+  },
+  "devDependencies": {
+    "typescript": "6.0.3",
+    "@types/node": "24.13.3"
+  }
+}

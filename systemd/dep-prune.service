@@ -1,0 +1,28 @@
+[Unit]
+Description=Prune matured release-age exclusions
+Documentation=https://github.com/martinfrancois/dependency-watchdog
+After=network-online.target
+OnFailure=dep-watchdog-rescue.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/env node __REPO_DIR__/src/cli-prune.ts
+Environment=HOME=%h
+# The node that runs this and the pnpm it shells out to must be the same toolchain. A user
+# systemd unit inherits a bare PATH with neither, so version managers like mise, nvm, asdf
+# and fnm are invisible to it. install.sh substitutes the directory holding the node it
+# verified.
+Environment=PATH=__NODE_BIN__:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin
+TimeoutStartSec=30min
+
+# Looser than the watchdog because this one clones repositories and runs pnpm, which needs a
+# writable store and cache. It still cannot write anywhere in the home directory except those.
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=read-only
+ReadWritePaths=%h/.local/share/pnpm %h/.cache %h/.local/state/dep-watchdog
+NoNewPrivileges=true
+RestrictSUIDSGID=true
+
+[Install]
+WantedBy=default.target

@@ -1,0 +1,56 @@
+{
+  "$comment": [
+    "Copy to $XDG_CONFIG_HOME/dep-watchdog/config.json (usually ~/.config/dep-watchdog/config.json).",
+    "Only 'repos' is required. Everything else has a default; the values below are the defaults,",
+    "shown so you can see what you are changing."
+  ],
+  "repos": [
+    "your-org/your-repo",
+    "your-org/another-repo"
+  ],
+  "workspaceFile": "pnpm-workspace.yaml",
+  "workspaceFiles": {
+    "$comment": "Per-repo overrides, for monorepos where the pnpm settings are not at the root.",
+    "your-org/monorepo": "frontend/pnpm-workspace.yaml"
+  },
+  "$comment_commit": [
+    "Identity for the commits the prune makes. Required before the prune will push: commits need",
+    "an author, and guessing one would attribute automated changes to whoever happens to be",
+    "configured on the machine."
+  ],
+  "commitName": null,
+  "commitEmail": null,
+  "defaultBranch": "main",
+  "thresholds": {
+    "securityPrHours": 48,
+    "failingPrDays": 7,
+    "noRefreshDays": 15,
+    "cooldownDays": 7,
+    "escalateAfterDays": 7,
+    "exclusionGraceDays": 7
+  },
+  "securityLabels": [
+    "security"
+  ],
+  "$comment_checks": [
+    "Every check is on by default. A missing lockfile skips the maintenance check.",
+    "Strict merge rules do not skip default-branch inspection."
+  ],
+  "checks": {
+    "securityPrs": true,
+    "failingPrs": true,
+    "lockfileRefresh": true,
+    "staleExclusions": true,
+    "defaultBranchBroken": true
+  },
+  "recovery": {
+    "enabled": false,
+    "codexCommand": "codex",
+    "watchdogRepo": "",
+    "watchdogCheckout": "",
+    "workspaceRoot": "/var/tmp/dep-watchdog-recovery",
+    "timeoutMinutes": 90,
+    "maxAttempts": 2,
+    "allowWatchdogMerge": false
+  }
+}

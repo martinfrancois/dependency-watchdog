@@ -1,0 +1,10 @@
+[Unit]
+Description=Process queued watchdog investigations
+
+[Timer]
+OnBootSec=2min
+OnUnitInactiveSec=1min
+Unit=dep-recovery.service
+
+[Install]
+WantedBy=timers.target

@@ -1,0 +1,33 @@
+[Unit]
+Description=Dependency automation watchdog
+Documentation=https://github.com/martinfrancois/dependency-watchdog
+# Not Requires=network-online.target: a run that starts before the network is up should fail and
+# be retried by the next timer, not block boot.
+After=network-online.target
+OnFailure=dep-watchdog-rescue.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/env node __REPO_DIR__/src/cli-watchdog.ts
+# gh reads its token from here, so the unit needs the real HOME rather than a private one.
+Environment=HOME=%h
+# The node that runs this and the pnpm it shells out to must be the same toolchain. A user
+# systemd unit inherits a bare PATH with neither, so version managers like mise, nvm, asdf
+# and fnm are invisible to it. install.sh substitutes the directory holding the node it
+# verified.
+Environment=PATH=__NODE_BIN__:%h/.local/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin
+# A hung API call must not hold the timer open until the next firing.
+TimeoutStartSec=15min
+
+# The watchdog only reads GitHub and writes one state file. Nothing else needs to be reachable.
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=read-only
+ReadWritePaths=%h/.local/state/dep-watchdog
+NoNewPrivileges=true
+RestrictSUIDSGID=true
+ProtectKernelTunables=true
+ProtectControlGroups=true
+
+[Install]
+WantedBy=default.target

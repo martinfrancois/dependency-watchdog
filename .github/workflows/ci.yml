@@ -1,0 +1,63 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  # Renovate opens pull requests here too; this is what decides whether they may automerge.
+
+permissions:
+  contents: read
+
+concurrency:
+  # One run per ref. A superseded push has nothing useful left to say.
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-node@v5
+        with:
+          # Must match the engines field. Type stripping and the coverage thresholds used below
+          # both need a recent Node; an older one fails in ways that look like source errors.
+          node-version-file: .nvmrc
+          cache: npm
+
+      # Only typescript and @types/node, and only for typechecking. Nothing here runs at runtime,
+      # which is why a lockfile install is cheap and why the jobs themselves have no dependencies.
+      - run: npm ci
+
+      - name: Typecheck
+        run: npm run typecheck
+
+      - name: Test with coverage thresholds
+        # Fails below 80% lines, branches or functions. The thresholds are enforced by node itself
+        # rather than a reporter, so there is no separate tool to keep in step.
+        run: npm test
+
+      - name: Check the entry points still start
+        # Catches the class of mistake where a refactor leaves a module importable but unrunnable.
+        # Both exit non-zero without configuration, which is the expected and correct behaviour.
+        run: |
+          set +e
+          node src/cli-watchdog.ts --dry-run 2>&1 | head -3
+          node src/cli-prune.ts --dry-run 2>&1 | head -3
+          echo "entry points loaded"
+
+      - name: Validate the systemd units
+        run: |
+          mkdir -p /tmp/units
+          for f in systemd/*; do
+            sed "s|__REPO_DIR__|$PWD|g" "$f" > "/tmp/units/$(basename "$f")"
+          done
+          cd /tmp/units && for f in *; do
+            systemd-analyze verify "./$f" || exit 1
+          done
+          echo "units valid"
+
+      - name: Check install.sh parses
+        run: bash -n install.sh
