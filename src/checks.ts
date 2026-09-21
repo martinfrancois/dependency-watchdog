@@ -272,7 +272,7 @@ export type CommitVerdict = "passing" | "failing" | "unknown";
  * The failing default-branch history contains a dependency commit.
  * This is correlation. The check does not establish which change caused the failure.
  *
- * This exists because private repositories deliberately do not require a branch to be up to date
+ * This exists because a watched repository may deliberately not require a branch to be up to date
  * before merging: forcing a rebase would spend another full CI run on every merge, and the risk it
  * removes is small. The accepted trade is that two changes which are each green on their own can
  * land and break the branch together. This check is the other half of that trade, catching it on

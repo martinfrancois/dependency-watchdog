@@ -17,10 +17,11 @@ concurrency:
 jobs:
   test:
     runs-on: ubuntu-24.04
+    timeout-minutes: 10
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
-      - uses: actions/setup-node@v5
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
           # Must match the engines field. Type stripping and the coverage thresholds used below
           # both need a recent Node; an older one fails in ways that look like source errors.
@@ -42,7 +43,10 @@ jobs:
       - name: Check the entry points still start
         # Catches the class of mistake where a refactor leaves a module importable but unrunnable.
         # Both exit non-zero without configuration, which is the expected and correct behaviour.
+        env:
+          DEP_WATCHDOG_CONFIG_DIR: ${{ runner.temp }}/dep-watchdog-config
         run: |
+          mkdir -p "$DEP_WATCHDOG_CONFIG_DIR"
           set +e
           node src/cli-watchdog.ts --dry-run 2>&1 | head -3
           node src/cli-prune.ts --dry-run 2>&1 | head -3

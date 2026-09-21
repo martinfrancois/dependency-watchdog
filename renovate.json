@@ -23,9 +23,8 @@
   "prConcurrentLimit": 0,
   "branchConcurrentLimit": 0,
   "separateMajorMinor": true,
-  "separateMultipleMajor": false,
+  "separateMultipleMajor": true,
   "separateMinorPatch": false,
-  "schedule": ["* 0-4 * * 5"],
   "vulnerabilityAlerts": {
     "description": "The security label is not decoration: the watchdog identifies a security pull request by this label plus Renovate authorship, and matching on the title instead produced nineteen false positives. A null minimumReleaseAge lets a fix for a known advisory bypass the cooldown, because a published advisory means the version is already being examined by everyone.",
     "enabled": true,
@@ -37,21 +36,18 @@
     "groupSlug": null
   },
   "lockFileMaintenance": {
-    "description": "Regenerate the committed lockfile on a schedule so transitive dependencies pick up published fixes. An advisory against a package that no manifest names is never resolved until the lockfile itself is refreshed. The watchdog reports the absence of these commits, so turning this off here would leave it reporting its own repository forever.",
+    "description": "Regenerate the committed lockfile every week so transitive dependencies pick up published fixes. An advisory against a package that no manifest names is never resolved until the lockfile itself is refreshed. The watchdog reports maintenance pull requests that stay open, so this repository runs the job it reports on.",
     "enabled": true,
-    "schedule": ["* 0-4 * * 5"],
     "automerge": true
   },
   "packageRules": [
     {
-      "description": "Group routine updates into one weekly pull request and merge it once Renovate observes the checks pass. One run a week rather than one per dependency, because Actions minutes on a private repository are finite.",
+      "description": "Merge eligible non-major updates after checks pass; keep unrelated dependencies separate.",
       "matchUpdateTypes": ["minor", "patch", "pin", "pinDigest", "digest"],
-      "groupName": "Routine dependency updates",
-      "groupSlug": "routine-dependencies",
       "automerge": true
     },
     {
-      "description": "Major updates require human review. The final private-repository grouping rules collect reviewed updates without changing this merge requirement.",
+      "description": "Major updates require human review.",
       "matchUpdateTypes": ["major"],
       "automerge": false,
       "addLabels": ["major update"]
@@ -63,33 +59,16 @@
       "matchPackageNames": ["typescript", "@types/node"]
     },
     {
+      "description": "Keep engines a range. The global pin strategy applies to engines too and would turn >=24 into one exact version, while the README promises 24 or newer.",
+      "matchManagers": ["npm"],
+      "matchDepTypes": ["engines"],
+      "rangeStrategy": "replace"
+    },
+    {
       "description": "The node version is stated in three places that must agree: engines, .nvmrc and the README. Renovate can move .nvmrc on its own, so it is held for review rather than merged into a disagreement.",
       "matchManagers": ["nvm"],
       "automerge": false,
       "addLabels": ["needs manual sync"]
-    },
-    {
-      "description": "Private repository: combine eligible automatic updates after package-specific rules to conserve Actions minutes. Keep existing review requirements unchanged.",
-      "matchUpdateTypes": ["minor", "patch", "pin", "pinDigest", "digest"],
-      "matchJsonata": ["automerge = true"],
-      "groupName": "Routine dependency updates",
-      "groupSlug": "routine-dependencies"
-    },
-    {
-      "description": "Private repository: bundle review-required updates without enabling automerge. Keep majors separate from reviewed non-major updates so incompatible major upgrades do not block other reviewed fixes.",
-      "matchUpdateTypes": [
-        "major",
-        "minor",
-        "patch",
-        "pin",
-        "pinDigest",
-        "digest"
-      ],
-      "matchJsonata": ["$not(automerge = true)"],
-      "groupName": "Reviewed dependency updates",
-      "groupSlug": "reviewed-dependencies",
-      "automerge": false
     }
-  ],
-  "updateNotScheduled": false
+  ]
 }
