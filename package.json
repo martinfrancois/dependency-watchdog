@@ -8,6 +8,7 @@
   "engines": {
     "node": ">=24"
   },
+  "packageManager": "pnpm@12.4.1",
   "scripts": {
     "watchdog": "node src/cli-watchdog.ts",
     "prune": "node src/cli-prune.ts",

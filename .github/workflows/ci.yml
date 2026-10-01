@@ -21,24 +21,28 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
+      - uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
+        with:
+          run_install: false
+
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
           # Must match the engines field. Type stripping and the coverage thresholds used below
           # both need a recent Node; an older one fails in ways that look like source errors.
           node-version-file: .nvmrc
-          cache: npm
+          cache: pnpm
 
       # Only typescript and @types/node, and only for typechecking. Nothing here runs at runtime,
       # which is why a lockfile install is cheap and why the jobs themselves have no dependencies.
-      - run: npm ci
+      - run: pnpm install --frozen-lockfile
 
       - name: Typecheck
-        run: npm run typecheck
+        run: pnpm run typecheck
 
       - name: Test with coverage thresholds
         # Fails below 80% lines, branches or functions. The thresholds are enforced by node itself
         # rather than a reporter, so there is no separate tool to keep in step.
-        run: npm test
+        run: pnpm test
 
       - name: Check the entry points still start
         # Catches the class of mistake where a refactor leaves a module importable but unrunnable.
