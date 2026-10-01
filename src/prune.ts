@@ -74,16 +74,52 @@ export function removeEntries(yamlText: string, doomed: string[]): string {
   end = lastItem + 1; // never swallow trailing comments that belong to whatever comes next
 
   const body = lines.slice(start + 1, end);
-  const kept = body.filter(
-    (l) =>
-      !isItem(l) ||
-      !doomed.includes(l.trim().slice(2).trim().replace(/^["']|["']$/g, "")),
-  );
+  const entryOf = (l: string): string => l.trim().slice(2).trim().replace(/^["']|["']$/g, "");
+  // A comment that names a removed entry describes that entry (Renovate writes one per security
+  // fix), so it goes with it. Comments that name nothing are general and stay.
+  const namesDoomed = (l: string): boolean => doomed.some((entry) => l.includes(entry));
+  const kept = body.filter((l) => (isItem(l) ? !doomed.includes(entryOf(l)) : !namesDoomed(l)));
   const keptItems = kept.filter(isItem);
 
   // An empty key is not valid here, so remove the key and its comments when the last entry goes.
+  // The column-zero comment lines directly above the key belong to it, the way YAML comments are
+  // read, and left behind they would describe entries that no longer exist. Dropping the key and
+  // its comment can leave two blank lines in a row where there was one; keep one.
+  let cut = start;
+  if (!keptItems.length) {
+    while (cut > 0 && /^#/.test(lines[cut - 1] ?? "")) cut--;
+    if (isBlank(lines[cut - 1] ?? "x") && isBlank(lines[end] ?? "x")) end++;
+  }
   const replacement = keptItems.length ? [lines[start] ?? "", ...kept] : [];
-  return [...lines.slice(0, start), ...replacement, ...lines.slice(end)].join("\n");
+  return [...lines.slice(0, cut), ...replacement, ...lines.slice(end)].join("\n");
+}
+
+/**
+ * Wrap prose at 72 columns, the width git itself recommends for a commit body.
+ *
+ * A monitored repository enforces commitlint's 100 character body limit and rejected a prune
+ * commit whose summary line ran past it, so the commit body is wrapped before it is written.
+ * List items and lines that already fit are left as they are.
+ */
+export function wrapBody(text: string, width = 72): string {
+  return text
+    .split("\n")
+    .flatMap((line) => {
+      if (line.length <= width || /^\s*-\s/.test(line)) return [line];
+      const wrapped: string[] = [];
+      let current = "";
+      for (const word of line.split(" ")) {
+        if (current && current.length + 1 + word.length > width) {
+          wrapped.push(current);
+          current = word;
+        } else {
+          current = current ? `${current} ${word}` : word;
+        }
+      }
+      if (current) wrapped.push(current);
+      return wrapped;
+    })
+    .join("\n");
 }
 
 type PruneResult = { repo: string; pruned?: string[]; skipped?: string; error?: string; dryRun?: boolean; prUrl?: string };
@@ -226,13 +262,17 @@ export async function publishPrune(repo: string, dir: string, file: string, matu
   const staged = await execute("git", ["diff", "--cached", "--name-only"], dir);
   if (staged.trim() !== file) throw new Error(`refusing to commit unexpected staged files: ${staged}`);
   const title = "chore(deps): prune matured release-age exclusions";
-  const body = `Removes ${matured.length} release-age exemptions from ${file} after their configured cooldown expired.\n\n` +
-    matured.map((m) => `- ${m}`).join("\n") +
-    "\n\nValidation: the edited YAML retains exactly the expected exclusions; pnpm install --lockfile-only --ignore-scripts accepts it without changing other files.\n\nThe operator reviews this PR before merging.";
+  const noun = matured.length === 1 ? "exemption" : "exemptions";
+  const body = wrapBody(
+    `Removes ${matured.length} release-age ${noun} from ${file} after the configured cooldown expired.\n\n` +
+      matured.map((m) => `- ${m}`).join("\n") +
+      "\n\nValidation: the edited YAML retains exactly the expected exclusions, and pnpm install --lockfile-only --ignore-scripts accepts it without changing other files.",
+  );
   await execute("git", ["commit", "-q", "-m", title, "-m", body], dir);
   try { await execute("git", ["push", "-u", "origin", branch], dir); }
   catch (error) { throw new PrunePushRejected(`Push stopped for ${repo}: ${(error as Error).message}`); }
-  return await execute("gh", ["pr", "create", "--repo", repo, "--base", base, "--head", branch, "--title", title, "--body", body], dir);
+  const prBody = `${body}\n\nThe operator reviews this PR before merging.`;
+  return await execute("gh", ["pr", "create", "--repo", repo, "--base", base, "--head", branch, "--title", title, "--body", prBody], dir);
 }
 
 export async function runPrune(): Promise<void> {
