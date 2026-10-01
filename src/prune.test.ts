@@ -1,7 +1,7 @@
 import test, { describe } from "node:test";
 import assert from "node:assert/strict";
 
-import { assertPruneOutcome, removeEntries, selectMatured } from "./prune.ts";
+import { assertPruneOutcome, removeEntries, selectMatured, wrapBody } from "./prune.ts";
 import { parseExclusions } from "./checks.ts";
 
 /**
@@ -84,6 +84,46 @@ describe("removeEntries", () => {
     assert.ok(out.includes("other: true"), "unrelated keys must survive");
   });
 
+  /**
+   * A security fix arrives with a comment block directly above the key naming the advisory and
+   * the date the entries become removable. When the prune removes the last entry, that block has
+   * nothing left to describe; one such prune shipped it orphaned above the next key.
+   */
+  const keyWithAttachedComment = `minimumReleaseAge: 10080
+
+# GHSA-0000-0000-0000 fixes a vulnerability in example.
+# Remove these entries after 2026-01-01.
+minimumReleaseAgeExclude:
+  - "@scope/pkg@1.2.3"
+  # Renovate security update: plain@4.5.6
+  - plain@4.5.6
+
+# What the next key does.
+other: true
+`;
+
+  test("removes the comment block attached to the key when the key goes", () => {
+    const out = removeEntries(keyWithAttachedComment, ["@scope/pkg@1.2.3", "plain@4.5.6"]);
+    assert.equal(out, "minimumReleaseAge: 10080\n\n# What the next key does.\nother: true\n");
+  });
+
+  test("keeps the comment block above the key while entries remain", () => {
+    const out = removeEntries(keyWithAttachedComment, ["plain@4.5.6"]);
+    assert.ok(out.includes("# Remove these entries after 2026-01-01.\nminimumReleaseAgeExclude:"));
+    assert.deepEqual(parseExclusions(out), ["@scope/pkg@1.2.3"]);
+  });
+
+  test("drops an inner comment that names a removed entry and keeps the rest", () => {
+    const out = removeEntries(keyWithAttachedComment, ["plain@4.5.6"]);
+    assert.ok(!out.includes("Renovate security update"));
+    assert.ok(out.includes("# GHSA-0000-0000-0000 fixes a vulnerability in example."));
+  });
+
+  test("does not reach above the key past a blank line or another key", () => {
+    const yaml = `# about the gate\nminimumReleaseAge: 10080\nminimumReleaseAgeExclude:\n  - a@1.0.0\nother: true\n`;
+    assert.equal(removeEntries(yaml, ["a@1.0.0"]), "# about the gate\nminimumReleaseAge: 10080\nother: true\n");
+  });
+
   test("is a no-op when nothing matches", () => {
     assert.equal(removeEntries(withComments, ["not-present@9.9.9"]), withComments);
   });
@@ -132,6 +172,22 @@ describe("removeEntries", () => {
 
     const fixed = parseExclusions(removeEntries(withComments, doomed)).sort();
     assert.deepEqual(fixed, expected, "the fixed implementation must satisfy it");
+  });
+});
+
+describe("wrapBody", () => {
+  test("wraps prose at the width and leaves list items and short lines alone", () => {
+    const long = "word ".repeat(30).trim();
+    const out = wrapBody(`${long}\n\n- ${long}\nshort`);
+    const lines = out.split("\n");
+    assert.ok(lines.filter((l) => !l.startsWith("- ")).every((l) => l.length <= 72), out);
+    assert.ok(lines.includes(`- ${long}`));
+    assert.equal(lines.at(-1), "short");
+    assert.equal(out.replace(/\n/g, " ").replace(/ +/g, " "), `${long} - ${long} short`);
+  });
+
+  test("returns text that already fits unchanged", () => {
+    assert.equal(wrapBody("one line\n\n- item@1.0.0\n"), "one line\n\n- item@1.0.0\n");
   });
 });
 

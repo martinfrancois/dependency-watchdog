@@ -18,6 +18,12 @@ test("pruning submits a PR after checking the staged file and never bypasses hoo
   assert.match(push.args.at(-1)!, /^watchdog\/prune-/);
   assert.ok(calls.find((c) => c.args.includes("create"))!.args.includes("trunk"));
   assert.ok(!calls.some((c) => c.args.includes("--no-verify") || c.args.includes("--force")));
+  // One monitored repository runs commitlint with a 100 character body line limit.
+  const body = calls.find((c) => c.args[0] === "commit")!.args.at(-1)!;
+  assert.ok(body.split("\n").every((line) => line.length <= 72), body);
+  assert.match(body, /^Removes 1 release-age exemption from pnpm-workspace\.yaml/);
+  assert.ok(!body.includes("operator reviews"), "process notes belong in the PR, not the commit");
+  assert.match(calls.find((c) => c.args.includes("create"))!.args.at(-1)!, /operator reviews this PR/);
 });
 test("an existing prune PR is reused without committing or pushing", async () => {
   let calls = 0;
