@@ -70,6 +70,28 @@ describe("isBillingBlocked", () => {
 });
 
 describe("toCheckRuns", () => {
+  test("keeps only the newest run for each check name", () => {
+    const out = toCheckRuns(
+      [
+        { name: "build", conclusion: "success", started_at: "2026-01-02T00:00:00Z" },
+        { name: "build", conclusion: "failure", started_at: "2026-01-01T00:00:00Z" },
+      ],
+      [],
+    );
+    assert.deepEqual(out.map((r) => [r.name, r.conclusion]), [["build", "success"]]);
+  });
+
+  test("keeps a newest failure when an older run passed", () => {
+    const out = toCheckRuns(
+      [
+        { name: "build", conclusion: "failure", started_at: "2026-01-02T00:00:00Z" },
+        { name: "build", conclusion: "success", started_at: "2026-01-01T00:00:00Z" },
+      ],
+      [],
+    );
+    assert.deepEqual(out.map((r) => [r.name, r.conclusion]), [["build", "failure"]]);
+  });
+
   test("carries the step count through, since that is what marks a job that never started", () => {
     const out = toCheckRuns(
       [{ name: "test", conclusion: "failure", started_at: "a", completed_at: "b", steps: [1, 2], html_url: "u" }],
