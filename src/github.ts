@@ -112,7 +112,13 @@ export function toCheckRuns(
   checkRuns: RawCheck[],
   statuses: RawStatus[],
 ): CheckRun[] {
-  const runs: CheckRun[] = (checkRuns || []).map((r) => ({
+  // GitHub returns check runs newest first. The `latest` API filter still returns one run from
+  // every check suite, so scheduled workflows can produce hundreds of runs with the same name.
+  const latestChecks = new Map<string, RawCheck>();
+  for (const run of checkRuns || []) {
+    if (!latestChecks.has(run.name)) latestChecks.set(run.name, run);
+  }
+  const runs: CheckRun[] = [...latestChecks.values()].map((r) => ({
     name: r.name,
     conclusion: r.conclusion,
     ...(r.started_at === undefined ? {} : { started: r.started_at }),
