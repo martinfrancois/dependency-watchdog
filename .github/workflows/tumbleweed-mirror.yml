@@ -1,0 +1,74 @@
+name: Tumbleweed mirror
+
+# Copies openSUSE Tumbleweed snapshots to ghcr.io before registry.opensuse.org deletes them.
+# Why: docs/tumbleweed-mirror.md.
+
+on:
+  schedule:
+    # Daily at 07:17 UTC. Off the full hour, where GitHub delays scheduled runs the most.
+    - cron: "17 7 * * *"
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - src/tumbleweed-mirror.ts
+      - src/cli-tumbleweed-mirror.ts
+      - .github/workflows/tumbleweed-mirror.yml
+
+permissions: {}
+
+concurrency:
+  # Never cancel a run halfway through a copy or a deletion; the next one waits instead.
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  # renovate: datasource=github-releases depName=google/go-containerregistry
+  CRANE_VERSION: v0.22.1
+
+jobs:
+  plan:
+    # A pull request only reads: it lists what a real run would copy and delete.
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      packages: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version-file: .nvmrc
+      - uses: imjasonh/setup-crane@feee3b6bb0d4c68370f256a4502498c9227e5c6b # v0.7
+        with:
+          version: ${{ env.CRANE_VERSION }}
+      - name: Dry run
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: node src/cli-tumbleweed-mirror.ts --dry-run
+
+  mirror:
+    if: github.event_name != 'pull_request'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    permissions:
+      contents: read
+      # Push new snapshots and delete expired ones. GITHUB_TOKEN is enough because this
+      # repository's workflow creates the package and so holds admin access to it.
+      packages: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version-file: .nvmrc
+      - uses: imjasonh/setup-crane@feee3b6bb0d4c68370f256a4502498c9227e5c6b # v0.7
+        with:
+          version: ${{ env.CRANE_VERSION }}
+      - name: Mirror new snapshots and prune expired ones
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: node src/cli-tumbleweed-mirror.ts
