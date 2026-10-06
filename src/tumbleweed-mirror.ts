@@ -1,10 +1,13 @@
 import { execFile } from "node:child_process";
+import { createHash } from "node:crypto";
 import { promisify } from "node:util";
 
 // Why this mirror exists, and why these numbers: docs/tumbleweed-mirror.md.
 export const SOURCE = "registry.opensuse.org/opensuse/tumbleweed";
 export const PACKAGE = "tumbleweed";
 export const KEEP_DAYS = 60;
+// amd64 is gone after 7 to 8 days, so an older tag that was never copied never will be.
+export const COPY_DAYS = 14;
 export const REQUIRED_ARCH = "amd64";
 const DAY = 86_400_000;
 
@@ -34,9 +37,9 @@ export function snapshotDate(tag: string): number | null {
 
 export const tagsOf = (v: PackageVersion): string[] => v.metadata?.container?.tags ?? [];
 
-/** Snapshot tags not mirrored yet, oldest first. Tags the retention would delete straight away are left out. */
+/** Snapshot tags from the last COPY_DAYS that are not mirrored yet, oldest first. */
 export function planCopies(upstream: string[], mirrored: Set<string>, now: number): string[] {
-  const oldest = now - KEEP_DAYS * DAY;
+  const oldest = now - COPY_DAYS * DAY;
   return upstream
     .filter((tag) => !mirrored.has(tag) && (snapshotDate(tag) ?? -Infinity) >= oldest)
     .sort();
@@ -82,9 +85,11 @@ export async function mirror({ owner, now = Date.now(), dryRun = false, run = de
   const upstream = (await run("crane", ["ls", SOURCE])).split("\n").map((t) => t.trim()).filter(Boolean);
   const mirrored = new Set((await listVersions()).flatMap(tagsOf));
   for (const tag of planCopies(upstream, mirrored, now)) {
-    // Resolve the digest once and copy by digest, so a tag moving mid-run cannot mix two snapshots.
-    const digest = (await run("crane", ["digest", `${SOURCE}:${tag}`])).trim();
-    const index = JSON.parse(await run("crane", ["manifest", `${SOURCE}@${digest}`])) as Index;
+    // One request per tag: the digest is the hash of the manifest bytes. Copying by that digest
+    // means a tag moving mid-run cannot mix two snapshots.
+    const raw = await run("crane", ["manifest", `${SOURCE}:${tag}`]);
+    const digest = `sha256:${createHash("sha256").update(raw, "utf8").digest("hex")}`;
+    const index = JSON.parse(raw) as Index;
     if (!hasPlatform(index, REQUIRED_ARCH)) {
       // registry.opensuse.org deletes amd64 first; a tag left with only other architectures is no use to an amd64 pin.
       report.skipped.push(tag);

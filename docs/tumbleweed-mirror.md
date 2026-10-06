@@ -80,7 +80,11 @@ which GitHub does not bill for public packages.
 - **Retention.** Tags whose date is more than 60 days before the newest mirrored date are deleted,
   together with the per-architecture manifests no remaining index refers to. The window counts back
   from the newest snapshot, not from today, so if openSUSE stops publishing, the mirror keeps its
-  last 60 days instead of emptying itself. Snapshots older than 60 days are never copied.
+  last 60 days instead of emptying itself.
+- **Only the last 14 days are checked for new tags.** amd64 is gone after 7 to 8 days, so an
+  older tag that was never copied can never qualify, and checking it again every day only costs
+  requests to registry.opensuse.org. Each tag costs one request: the digest is the SHA-256 of the
+  manifest bytes.
 - **Pins in other repositories are not checked.** The repositories that pin the mirror are private,
   and reading them would need a token with more access than `GITHUB_TOKEN`. Renovate moves those
   pins weekly, so a pin is normally at most two weeks old. A pin older than 60 days means its
