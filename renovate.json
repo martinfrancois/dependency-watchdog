@@ -3,6 +3,7 @@
   "extends": [
     "config:recommended",
     "helpers:pinGitHubActionDigests",
+    "customManagers:githubActionsVersions",
     ":rebaseStalePrs"
   ],
   "description": "This repository watches Renovate, so it runs under the same rules it reports on. Anything configured here that the watchdog depends on is documented in README.md under 'What the watched repositories need'.",
