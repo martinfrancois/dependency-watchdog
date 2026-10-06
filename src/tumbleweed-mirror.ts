@@ -52,7 +52,8 @@ export function hasPlatform(index: Index, arch: string): boolean {
 /**
  * Splits tagged versions into expired and kept. The window counts back from the newest mirrored
  * snapshot, not from today, so a mirror whose source stops publishing keeps its last 60 days
- * instead of emptying itself. A version carrying any tag that is not an expired snapshot date stays.
+ * instead of emptying itself, and the version with the newest date is always kept. A version
+ * carrying any tag that is not an expired snapshot date stays.
  */
 export function planRetention(versions: PackageVersion[]): { expired: PackageVersion[]; kept: PackageVersion[] } {
   const tagged = versions.filter((v) => tagsOf(v).length > 0);
@@ -106,7 +107,6 @@ export async function mirror({ owner, now = Date.now(), dryRun = false, run = de
 
   const versions = await listVersions();
   const { expired, kept } = planRetention(versions);
-  if (kept.length === 0 && expired.length > 0) throw new Error("Retention would delete every tagged version; refusing");
   // Per-architecture manifests are untagged versions of their own; keep every one a kept index still references.
   const referenced = new Set<string>();
   for (const v of kept) {
