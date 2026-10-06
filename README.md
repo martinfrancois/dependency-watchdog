@@ -7,6 +7,7 @@ incidents and prepares tested repairs.
 - **watchdog** reports persistent findings and sends weekly reminders. Inspect its run report to check coverage.
 - **prune** proposes a PR removing `minimumReleaseAgeExclude` entries whose version has aged past the cooldown.
 - **recovery** calls an installed Codex CLI to investigate confirmed incidents. See [Codex recovery](docs/recovery.md).
+- **Tumbleweed mirror** is a GitHub Actions workflow, not a local job. It copies each openSUSE Tumbleweed snapshot to `ghcr.io/martinfrancois/tumbleweed` before registry.opensuse.org deletes it, so a snapshot pinned under the 7-day cooldown still exists when it is used. See [Tumbleweed mirror](docs/tumbleweed-mirror.md).
 
 No dependencies. Node's standard library, `git` and the GitHub CLI, nothing else. A watchdog that
 can be broken by a dependency update would be an unusually stupid way for this to fail.
