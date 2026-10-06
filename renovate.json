@@ -38,7 +38,8 @@
   "lockFileMaintenance": {
     "description": "Regenerate the committed lockfile every week so transitive dependencies pick up published fixes. An advisory against a package that no manifest names is never resolved until the lockfile itself is refreshed. The watchdog reports maintenance pull requests that stay open, so this repository runs the job it reports on.",
     "enabled": true,
-    "automerge": true
+    "automerge": true,
+    "schedule": ["* 0-4 * * 5"]
   },
   "packageRules": [
     {
