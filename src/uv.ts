@@ -265,62 +265,88 @@ export type SandboxPaths = {
   cache: string;
   /** Resolved uv executable, mounted read-only. */
   uv: string;
-  /** Resolved interpreter, visible through the read-only root; see assertVisible. */
-  python: string;
-  /** Directories to hide behind an empty tmpfs: every home, the temp dirs, user runtime sockets. */
-  hidden: string[];
+  /**
+   * How the host's top-level /bin, /sbin, /lib and /lib64 look: a symlink target (merged /usr)
+   * or null for a real directory, which is then mounted read-only. Absent entries are skipped.
+   */
+  rootLinks: Record<string, string | null>;
 };
 
 /**
- * bubblewrap arguments that run uv with no access to this job's credentials.
+ * bubblewrap arguments that run a command with no access to this job's credentials.
  *
- * uv can run code it should not even with --no-build: it executes the project environment's
- * interpreter to read its version, follows .python-version to an executable, and builds the root
- * project to read dynamic metadata (all measured with uv 0.13.0). Rather than chase each one, uv
- * runs in a namespace where the homes are empty, the environment is cleared, and the only writable
- * places are a copy of the two files and a throwaway cache. The network stays, because uv needs the
- * index; there is nothing left to send.
+ * The sandbox sees /usr, the loader paths, the resolver files, a copy of the two files, a
+ * throwaway cache and uv, and nothing else: no home, no configuration directory, no runtime
+ * sockets. The environment is cleared. The network is shared only when uv needs the index.
  */
-export function sandboxArgs(p: SandboxPaths, uvArgs: string[]): string[] {
-  const args = ["--die-with-parent", "--unshare-all", "--share-net", "--ro-bind", "/", "/"];
-  for (const dir of p.hidden) args.push("--tmpfs", dir);
-  args.push("--dev", "/dev", "--proc", "/proc");
-  // Mount points are created inside the tmpfs over /tmp, because the root is read-only.
+export function sandboxArgs(p: SandboxPaths, argv: string[], network: boolean): string[] {
+  const args = ["--die-with-parent", "--unshare-all", ...(network ? ["--share-net"] : [])];
+  args.push("--ro-bind", "/usr", "/usr");
+  for (const [dir, target] of Object.entries(p.rootLinks)) {
+    if (target === null) args.push("--ro-bind", dir, dir);
+    else args.push("--symlink", target, dir);
+  }
+  args.push("--ro-bind-try", "/etc/resolv.conf", "/etc/resolv.conf", "--ro-bind-try", "/etc/hosts", "/etc/hosts");
+  args.push("--dev", "/dev", "--proc", "/proc", "--tmpfs", "/tmp");
   args.push("--bind", p.work, "/tmp/work", "--bind", p.cache, "/tmp/cache");
   args.push("--ro-bind", p.uv, "/tmp/bin/uv");
-  args.push("--clearenv", "--setenv", "PATH", "/usr/bin:/bin", "--setenv", "HOME", "/tmp/work");
+  args.push("--clearenv", "--setenv", "PATH", "/usr/bin", "--setenv", "HOME", "/tmp/work");
   args.push("--setenv", "UV_CACHE_DIR", "/tmp/cache", "--chdir", "/tmp/work");
-  args.push("/tmp/bin/uv", ...uvArgs, "--no-build", "--python", p.python);
-  return args;
+  return [...args, ...argv];
+}
+
+/** uv inside the sandbox, never building, with the given interpreter. */
+export function sandboxedUv(uvArgs: string[], python: string): string[] {
+  return ["/tmp/bin/uv", ...uvArgs, "--no-build", "--python", python];
 }
 
 /**
- * The directory to hide so that every user's home goes, not only this one: the directory holding
- * the home, raised while its parent cannot be listed. bubblewrap cannot create a mount point below
- * a directory it may only traverse, so on a host whose homes sit under such a directory the tmpfs
- * goes on the highest one.
+ * Python, run offline in the sandbox before uv, that refuses a pyproject.toml uv would have to
+ * build to read. uv builds the root project for dynamic metadata even with --no-build, and needs a
+ * build for local, Git and URL sources, so any of those means code from the repository or a
+ * download would run. tomllib reads every TOML spelling of a key, which a line scan cannot.
  */
-export function homesRoot(home: string, readable: (dir: string) => boolean): string {
-  let dir = path.dirname(home);
-  while (path.dirname(dir) !== dir && path.dirname(dir) !== "/" && !readable(path.dirname(dir))) {
-    dir = path.dirname(dir);
-  }
-  return dir;
-}
+export const PREFLIGHT = `
+import tomllib
+with open("pyproject.toml", "rb") as f:
+    data = tomllib.load(f)
+project = data.get("project")
+uv = data.get("tool", {}).get("uv", {})
+bad = []
+if not isinstance(project, dict):
+    bad.append("no [project] table")
+else:
+    if project.get("dynamic"):
+        bad.append("dynamic metadata (" + ", ".join(map(str, project["dynamic"])) + ")")
+    if "version" not in project:
+        bad.append("no static version")
+if uv.get("sources"):
+    bad.append("uv sources")
+if "workspace" in uv:
+    bad.append("a uv workspace")
+requirements = list(project.get("dependencies", [])) if isinstance(project, dict) else []
+if isinstance(project, dict):
+    for group in project.get("optional-dependencies", {}).values():
+        requirements += group
+for group in data.get("dependency-groups", {}).values():
+    requirements += group
+requirements += uv.get("dev-dependencies", [])
+for requirement in requirements:
+    if isinstance(requirement, str) and "@" in requirement.split(";")[0]:
+        bad.append("direct reference " + requirement)
+if bad:
+    raise SystemExit("; ".join(bad))
+`;
 
 /**
- * Refuse an interpreter the sandbox would have to mount back in.
- *
- * Mounting an interpreter's directory over the empty homes would re-expose whatever else lives
- * there, a whole home directory for a `~/bin/python`. So the interpreter must already be visible:
- * outside every hidden directory.
+ * The interpreter must be one the sandbox shows anyway, under /usr. Mounting one from elsewhere
+ * would re-expose whatever lives beside it, a whole home directory for a ~/bin/python.
  */
-export function assertVisible(python: string, hidden: string[]): void {
-  const inside = hidden.find((dir) => python === dir || python.startsWith(`${dir}/`));
-  if (inside) {
+export function assertVisible(python: string): void {
+  if (!python.startsWith("/usr/")) {
     throw new Error(
-      `refusing to run uv: the interpreter ${python} is under ${inside}, which the sandbox hides. ` +
-        "Install a system Python in /usr/bin or /usr/local/bin",
+      `refusing to run uv: the interpreter ${python} is outside /usr, the only tree the sandbox ` +
+        "shows. Install a system Python in /usr/bin or /usr/local/bin",
     );
   }
 }
