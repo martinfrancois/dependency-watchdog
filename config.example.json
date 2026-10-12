@@ -10,9 +10,16 @@
   ],
   "workspaceFile": "pnpm-workspace.yaml",
   "workspaceFiles": {
-    "$comment": "Per-repo overrides, for monorepos where the pnpm settings are not at the root.",
-    "your-org/monorepo": "frontend/pnpm-workspace.yaml"
+    "$comment": "Per-repo overrides: a pnpm workspace file not at the root, or a uv pyproject.toml.",
+    "your-org/monorepo": "frontend/pnpm-workspace.yaml",
+    "your-org/python-repo": "pyproject.toml"
   },
+  "$comment_uv": [
+    "A workspaceFiles path ending in pyproject.toml means uv's exclude-newer-package table. The prune",
+    "validates its edit with this uv. The units see only node's directory and the system directories",
+    "on PATH, so give an absolute path for a uv installed by a version manager."
+  ],
+  "uvCommand": "uv",
   "$comment_commit": [
     "Identity for the commits the prune makes. Required before the prune will push: commits need",
     "an author, and guessing one would attribute automated changes to whoever happens to be",

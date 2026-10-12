@@ -33,6 +33,7 @@ export type Settings = {
   recovery: RecoverySettings;
   workspaceFile: string;
   workspaceFiles: Record<string, string>;
+  uvCommand: string;
   commitName: string | null;
   commitEmail: string | null;
   defaultBranch: string;
