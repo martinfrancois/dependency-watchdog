@@ -269,9 +269,13 @@ leaves merging to the operator.
 
 uv records the table in `uv.lock`, so a uv prune changes both files. It runs `uv lock --no-build`
 and `uv lock --no-build --check`, then compares every locked package version before and after and
-refuses to push if any moved. `--no-build` keeps it from building a source distribution, which would
-run code from a release on a machine that holds GitHub credentials; the pnpm side passes
-`--ignore-scripts` for the same reason.
+refuses to push if any moved. The prune holds GitHub credentials, so uv must run no code from the
+repository or a release; the pnpm side passes `--ignore-scripts` for the same reason. `--no-build`
+stops source distribution builds. uv runs with an interpreter found outside the clone and a project
+environment path that does not exist, because otherwise it executes the repository's
+`.venv/bin/python`, or whatever `.python-version` points at, to read the Python version. A
+`pyproject.toml` with dynamic metadata, `[tool.uv.sources]` or a uv workspace is refused, because uv
+runs build backends to read their metadata even with `--no-build`; prune those by hand.
 
 It is a job rather than a CI check on purpose. A check that fails when an entry turns eight days old
 is triggered by the passage of time, not by a change. It would go red on an unrelated commit and,

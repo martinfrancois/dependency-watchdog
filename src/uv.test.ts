@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 
 import {
   assertSameVersions, assertUvOutcome, isUvSettingsFile, lockedVersions, maturedUvEntries, parseSpan, parseUvExclusions,
-  removeUvEntries, uvCooldownMs,
+  removeUvEntries, uvBuildBlockers, uvCooldownMs,
 } from "./uv.ts";
 
 const DAY = 86_400_000;
@@ -222,5 +222,24 @@ version = "12.3.0"
     const downgraded = lock.replace('version = "0.17.0"', 'version = "0.16.10"');
     assert.throws(() => assertSameVersions(lock, downgraded, ["ruff x"]),
       /removing ruff x changed locked versions \(removed ruff==0.17.0; added ruff==0.16.10\)/);
+  });
+});
+
+describe("uvBuildBlockers", () => {
+  test("a static project with no sources or workspace is safe to lock", () => {
+    assert.deepEqual(uvBuildBlockers(pyproject), []);
+  });
+
+  test("finds dynamic metadata, sources and workspaces in every TOML form", () => {
+    assert.deepEqual(uvBuildBlockers('[project]\nname = "x"\ndynamic = ["version"]\n'), ["dynamic project metadata"]);
+    assert.deepEqual(uvBuildBlockers('project = { name = "x", dynamic = ["version"] }\n'), ["dynamic project metadata"]);
+    assert.deepEqual(uvBuildBlockers('[tool.uv.sources]\nlib = { path = "lib" }\n'), ["uv sources"]);
+    assert.deepEqual(uvBuildBlockers('[tool.uv]\nsources = { lib = { path = "lib" } }\n'), ["uv sources"]);
+    assert.deepEqual(uvBuildBlockers('tool.uv.sources.lib = { path = "lib" }\n'), ["uv sources"]);
+    assert.deepEqual(uvBuildBlockers('[tool.uv.workspace]\nmembers = ["pkg/*"]\n'), ["a uv workspace"]);
+  });
+
+  test("ignores the words in comments", () => {
+    assert.deepEqual(uvBuildBlockers("# no dynamic = metadata, no sources = here, no workspace]\n"), []);
   });
 });

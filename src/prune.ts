@@ -14,7 +14,7 @@ import { loadSettings, workspaceFileFor, statePath } from "./config.ts";
 import type { Settings } from "./types.ts";
 import { parseExclusions, publishedAt } from "./checks.ts";
 import {
-  assertSameVersions, assertUvOutcome, describeUvEntry, isUvSettingsFile, maturedUvEntries, parseUvExclusions,
+  assertSameVersions, assertUvOutcome, describeUvEntry, uvBuildBlockers, isUvSettingsFile, maturedUvEntries, parseUvExclusions,
   removeUvEntries, uvCooldownMs,
 } from "./uv.ts";
 
@@ -249,8 +249,16 @@ async function prunePnpm(repo: string, dir: string, file: string, text: string, 
  * versions must be identical before and after. A version change would mean the entry was still
  * holding something back, which is exactly what a matured entry must never do.
  *
- * --no-build because building a source distribution runs code from the release, and this job
- * holds GitHub credentials; the pnpm prune passes --ignore-scripts for the same reason.
+ * This job holds GitHub credentials, so uv must run no code from the repository or a release.
+ * The pnpm prune passes --ignore-scripts for the same reason. Measured with uv 0.13.0, three ways
+ * in, each closed separately:
+ * - A source distribution's build: --no-build.
+ * - The interpreter. uv runs the project environment's python (.venv/bin/python) to read its
+ *   version even when --python names another, and follows .python-version to an executable when
+ *   it does not. Hence a trusted interpreter found outside the clone, and a project environment
+ *   path in a private directory that does not exist.
+ * - The project's own build backend, which uv runs to read dynamic metadata despite --no-build.
+ *   uvBuildBlockers refuses those files before uv sees them.
  */
 async function pruneUv(repo: string, dir: string, file: string, text: string, settings: Settings): Promise<PruneResult> {
   const full = path.join(dir, file);
@@ -261,6 +269,13 @@ async function pruneUv(repo: string, dir: string, file: string, text: string, se
   const labels = matured.map(describeUvEntry);
   if (DRY_RUN) return { repo, pruned: labels, dryRun: true };
 
+  const blockers = uvBuildBlockers(text);
+  if (blockers.length) {
+    throw new Error(
+      `refusing to run uv on ${file}: ${blockers.join("; ")}. uv would build the project or a ` +
+        "local source to read its metadata, which runs repository code with this job's credentials",
+    );
+  }
   const lockFile = path.posix.join(path.posix.dirname(file), "uv.lock");
   const lockBefore = readFileSync(path.join(dir, lockFile), "utf8");
   const names = matured.map((e) => e.name);
@@ -268,14 +283,19 @@ async function pruneUv(repo: string, dir: string, file: string, text: string, se
   assertUvOutcome(entries, names, next, file);
   writeFileSync(full, next);
 
-  const uv = (args: string[]) =>
-    run(settings.uvCommand, args, { cwd: path.dirname(full), maxBuffer: 8 * 1024 * 1024 });
+  const outside = mkdtempSync(path.join(tmpdir(), "prune-uv-"));
   try {
-    await uv(["lock", "--no-build"]);
-    await uv(["lock", "--no-build", "--check"]);
+    const python = (await run(settings.uvCommand, ["python", "find", "--no-project"], { cwd: outside })).stdout.trim();
+    const env = { ...process.env, UV_PROJECT_ENVIRONMENT: path.join(outside, "absent") };
+    const uv = (args: string[]) =>
+      run(settings.uvCommand, [...args, "--no-build", "--python", python], { cwd: path.dirname(full), env, maxBuffer: 8 * 1024 * 1024 });
+    await uv(["lock"]);
+    await uv(["lock", "--check"]);
   } catch (error) {
     const e = error as { stderr?: string; message?: string };
     throw new Error(`refusing to push: uv rejected the edited ${file}. ${String(e.stderr || e.message).slice(0, 300)}`);
+  } finally {
+    rmSync(outside, { recursive: true, force: true });
   }
   assertSameVersions(lockBefore, readFileSync(path.join(dir, lockFile), "utf8"), labels);
   const changed = await assertChangedFiles(dir, [file, lockFile], [file]);
