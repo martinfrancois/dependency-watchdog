@@ -1,9 +1,13 @@
 import test, { describe } from "node:test";
 import assert from "node:assert/strict";
+import { spawnSync } from "node:child_process";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import path from "node:path";
 
 import {
   assertSameVersions, assertUvOutcome, isUvSettingsFile, lockedVersions, maturedUvEntries, parseSpan, parseUvExclusions,
-  removeUvEntries, assertVisible, expectedLockAfterPrune, homesRoot, sandboxArgs, uvCooldownMs,
+  removeUvEntries, assertVisible, expectedLockAfterPrune, PREFLIGHT, sandboxArgs, sandboxedUv, uvCooldownMs,
 } from "./uv.ts";
 
 const DAY = 86_400_000;
@@ -259,62 +263,78 @@ version = "2.3.1"
 describe("sandboxArgs", () => {
   const paths = {
     work: "/tmp/prune-uv-1/work", cache: "/tmp/prune-uv-1/cache", uv: "/opt/uv/uv",
-    python: "/usr/bin/python3.13", hidden: ["/home", "/tmp", "/var/tmp", "/run/user"],
+    rootLinks: { "/bin": "usr/bin", "/lib64": null },
   };
-  const args = sandboxArgs(paths, ["lock"]);
-  const pairs = (flag: string) => args.flatMap((a, i) => (a === flag ? [args[i + 1]] : []));
+  const args = sandboxArgs(paths, sandboxedUv(["lock"], "/usr/bin/python3.13"), true);
+  const pairs = (flag: string, list = args) => list.flatMap((a, i) => (a === flag ? [list[i + 1]] : []));
 
-  test("hides every listed directory and clears the environment", () => {
-    assert.deepEqual(pairs("--tmpfs"), paths.hidden);
-    assert.ok(args.includes("--clearenv"));
-    assert.ok(args.includes("--unshare-all"));
+  test("shows only /usr, the loader paths and the resolver files read-only", () => {
+    assert.deepEqual(pairs("--ro-bind"), ["/usr", "/lib64", paths.uv]);
+    assert.deepEqual(pairs("--symlink"), ["usr/bin"]);
+    assert.deepEqual(pairs("--ro-bind-try"), ["/etc/resolv.conf", "/etc/hosts"]);
+    assert.ok(!args.includes("/"), "the host root is never mounted");
+  });
+
+  test("makes only the copy and the cache writable, and clears the environment", () => {
+    assert.deepEqual(pairs("--bind"), [paths.work, paths.cache]);
+    assert.ok(args.includes("--clearenv") && args.includes("--unshare-all"));
     assert.deepEqual(pairs("--setenv"), ["PATH", "HOME", "UV_CACHE_DIR"]);
   });
 
-  test("mounts the copy and the cache after hiding /tmp, and only them writable", () => {
-    assert.ok(args.indexOf("--bind") > args.lastIndexOf("--tmpfs"));
-    assert.deepEqual(pairs("--bind"), [paths.work, paths.cache]);
+  test("shares the network only when asked", () => {
+    assert.ok(args.includes("--share-net"));
+    assert.ok(!sandboxArgs(paths, ["true"], false).includes("--share-net"));
   });
 
   test("pins the interpreter and never builds", () => {
     assert.deepEqual(args.slice(-5), ["/tmp/bin/uv", "lock", "--no-build", "--python", "/usr/bin/python3.13"]);
   });
-
-  test("mounts nothing back over the hidden directories but the copy, the cache and uv", () => {
-    const out = sandboxArgs({ ...paths, python: "/opt/py/bin/python3" }, ["lock"]);
-    assert.deepEqual(pairs("--ro-bind"), ["/", paths.uv]);
-    assert.ok(!out.includes("/opt/py"), "the interpreter is reached through the read-only root");
-  });
-});
-
-describe("homesRoot", () => {
-  test("is the directory holding the homes when its parent can be listed", () => {
-    assert.equal(homesRoot("/home/alice", () => true), "/home");
-  });
-
-  test("rises past directories that may only be traversed", () => {
-    const traverseOnly = new Set(["/srv/homes", "/srv/homes/live"]);
-    assert.equal(homesRoot("/srv/homes/live/alice", (d) => !traverseOnly.has(d)), "/srv/homes");
-  });
-
-  test("never returns the root", () => {
-    assert.equal(homesRoot("/a/b/alice", () => false), "/a");
-  });
 });
 
 describe("assertVisible", () => {
-  const hidden = ["/home", "/srv/homes", "/tmp"];
-
-  test("accepts a system interpreter", () => {
-    assert.doesNotThrow(() => assertVisible("/usr/bin/python3.13", hidden));
+  test("accepts an interpreter under /usr", () => {
+    assert.doesNotThrow(() => assertVisible("/usr/bin/python3.13"));
+    assert.doesNotThrow(() => assertVisible("/usr/local/bin/python3.12"));
   });
 
-  test("refuses one under a hidden directory instead of mounting it back", () => {
-    assert.throws(() => assertVisible("/home/alice/bin/python", hidden), /under \/home, which the sandbox hides/);
-    assert.throws(() => assertVisible("/srv/homes/live/alice/.local/python3", hidden), /under \/srv\/homes/);
+  test("refuses one elsewhere instead of mounting it", () => {
+    assert.throws(() => assertVisible("/home/alice/bin/python"), /outside \/usr/);
+    assert.throws(() => assertVisible("/usrlocal/python3"), /outside \/usr/);
+  });
+});
+
+describe("PREFLIGHT", () => {
+  const python = spawnSync("python3", ["-c", "import tomllib"]).status === 0 ? "python3" : null;
+  const verdict = (toml: string): string => {
+    const dir = mkdtempSync(path.join(tmpdir(), "wd-preflight-"));
+    try {
+      writeFileSync(path.join(dir, "pyproject.toml"), toml);
+      const r = spawnSync(python!, ["-I", "-c", PREFLIGHT], { cwd: dir, encoding: "utf8" });
+      return r.status === 0 ? "ok" : r.stderr.trim();
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  };
+  const base = '[project]\nname = "x"\nversion = "1"\ndependencies = ["pillow==12.3.0"]\n';
+
+  test("accepts a static project", { skip: !python && "needs python3 with tomllib" }, () => {
+    assert.equal(verdict(`${base}\n[dependency-groups]\ndev = ["ruff==0.17.0", { include-group = "x" }]\n`), "ok");
   });
 
-  test("does not mistake a sibling with a shared prefix for a hidden directory", () => {
-    assert.doesNotThrow(() => assertVisible("/homes-shared/python3", hidden));
+  test("refuses dynamic metadata however the key is spelled", { skip: !python && "needs python3 with tomllib" }, () => {
+    assert.match(verdict('[project]\nname = "x"\n"dynamic" = ["version"]\n'), /dynamic metadata \(version\); no static version/);
+    assert.match(verdict('[project]\nname = "x"\n"dyn\\u0061mic" = ["version"]\nversion = "1"\n'), /dynamic metadata/);
+    assert.match(verdict('project = { name = "x", version = "1", dynamic = ["readme"] }\n'), /dynamic metadata \(readme\)/);
+  });
+
+  test("refuses sources, workspaces and direct references", { skip: !python && "needs python3 with tomllib" }, () => {
+    assert.match(verdict(`${base}[tool.uv.sources]\nlib = { path = "lib" }\n`), /uv sources/);
+    assert.match(verdict(`tool.uv.workspace.members = ["p/*"]\n${base}`), /a uv workspace/);
+    assert.match(verdict(base.replace('"pillow==12.3.0"', '"lib @ file:///tmp/lib"')), /direct reference lib @ file/);
+    assert.match(verdict(`${base}[tool.uv]\ndev-dependencies = ["x @ git+https://example.test/x"]\n`), /direct reference x @ git/);
+  });
+
+  test("refuses a file without a project table", { skip: !python && "needs python3 with tomllib" }, () => {
+    assert.match(verdict('[tool.uv]\nexclude-newer = "7 days"\n'), /no \[project\] table/);
   });
 });

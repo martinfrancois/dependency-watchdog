@@ -274,16 +274,21 @@ by exactly the removed entries.
 
 The prune holds GitHub credentials, and uv can run code it was handed even with `--no-build`: it
 executes the project environment's interpreter to read its version, follows `.python-version` to an
-executable, and builds the root project to read dynamic metadata. So uv runs inside bubblewrap
-(`bwrap`), with every home directory, `/tmp`, `/var/tmp` and `/run/user` replaced by empty
-directories, the environment cleared, and nothing writable but the copy and a throwaway cache. The
-network stays, because uv needs the package index. Without `bwrap` the uv prune refuses to run. uv
-locks with a system Python (`uv python find --system` on a system `PATH`); an interpreter under one
-of the hidden directories is refused rather than mounted back in, since that would re-expose what
-the sandbox hides.
-Projects whose metadata needs more than these two files, such as dynamic metadata, uv workspaces or
-local sources, fail validation and have to be pruned by hand. The pnpm side passes
-`--ignore-scripts` for the same reason.
+executable, and builds the root project to read dynamic metadata. Three layers keep that from
+happening:
+
+- uv only ever sees a copy of `pyproject.toml` and `uv.lock`, so no `.venv`, `.python-version` or
+  build backend from the repository is there to run, and it gets a system interpreter under `/usr`
+  (`uv python find --system` on a system `PATH`); one anywhere else is refused.
+- Before uv runs, Python's `tomllib` reads the copy offline and refuses anything uv would have to
+  build: dynamic metadata, no static version, `[tool.uv.sources]`, a uv workspace, or a direct
+  reference such as `pkg @ file:...`. Those projects have to be pruned by hand.
+- Both run inside bubblewrap (`bwrap`), which shows only `/usr`, the loader paths,
+  `/etc/resolv.conf` and `/etc/hosts`, the copy, a throwaway cache and uv: no home directory, no
+  configuration directory, no runtime sockets, and a cleared environment. Only the uv steps share
+  the network, because uv needs the package index. Without `bwrap` the uv prune refuses to run.
+
+The pnpm side passes `--ignore-scripts` for the same reason.
 
 It is a job rather than a CI check on purpose. A check that fails when an entry turns eight days old
 is triggered by the passage of time, not by a change. It would go red on an unrelated commit and,

@@ -5,8 +5,8 @@
  */
 import { createHash } from "node:crypto";
 import { execFile } from "node:child_process";
-import { accessSync, constants, existsSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync, mkdirSync, renameSync } from "node:fs";
-import { homedir, tmpdir } from "node:os";
+import { accessSync, constants, lstatSync, mkdtempSync, readFileSync, readlinkSync, realpathSync, rmSync, writeFileSync, mkdirSync, renameSync } from "node:fs";
+import { tmpdir } from "node:os";
 import path from "node:path";
 import { promisify } from "node:util";
 
@@ -15,7 +15,7 @@ import type { Settings } from "./types.ts";
 import { parseExclusions, publishedAt } from "./checks.ts";
 import {
   assertSameVersions, assertUvOutcome, describeUvEntry, expectedLockAfterPrune, isUvSettingsFile, maturedUvEntries, parseUvExclusions,
-  assertVisible, homesRoot, removeUvEntries, sandboxArgs, uvCooldownMs,
+  assertVisible, PREFLIGHT, removeUvEntries, sandboxArgs, sandboxedUv, uvCooldownMs,
 } from "./uv.ts";
 
 const run = promisify(execFile);
@@ -251,8 +251,11 @@ async function prunePnpm(repo: string, dir: string, file: string, text: string, 
  * do.
  *
  * This job holds GitHub credentials, and uv can run code from the repository or a release even
- * with --no-build, so uv runs inside bubblewrap; see sandboxArgs. The pnpm prune passes
- * --ignore-scripts for the same reason.
+ * with --no-build: it runs the project environment's interpreter, follows .python-version to an
+ * executable, and builds the root project for dynamic metadata (measured with uv 0.13.0). So uv
+ * gets a copy of the two files, a pinned system interpreter, and a PREFLIGHT that refuses anything
+ * it would have to build, and all of it runs inside bubblewrap; see sandboxArgs. The pnpm prune
+ * passes --ignore-scripts for the same reason.
  */
 async function pruneUv(repo: string, dir: string, file: string, text: string, settings: Settings): Promise<PruneResult> {
   const full = path.join(dir, file);
@@ -324,19 +327,30 @@ async function relockInSandbox(pyproject: string, lock: string, uvCommand: strin
     mkdirSync(cache);
     writeFileSync(path.join(work, "pyproject.toml"), pyproject);
     writeFileSync(path.join(work, "uv.lock"), lock);
-    const hidden = [...new Set(["/home", homesRoot(realpathSync(homedir()), (d) => { try { accessSync(d, constants.R_OK); return true; } catch { return false; } }), "/root", "/tmp", "/var/tmp", "/run/user"])]
-      .filter((d) => existsSync(d));
     // A system interpreter only, found with a system PATH and no project files, so neither the
     // operator's shell setup nor the repository steers the choice.
     const found = (await run(uv, ["python", "find", "--no-project", "--system"], {
       cwd: work, env: { PATH: "/usr/local/bin:/usr/bin:/bin", HOME: process.env.HOME ?? "" },
     })).stdout.trim();
     const python = realpathSync(found);
-    assertVisible(python, hidden);
-    const paths = { work, cache, uv, python, hidden };
-    for (const args of [["lock"], ["lock", "--check"]]) {
-      await run(bwrap, sandboxArgs(paths, args), { maxBuffer: 8 * 1024 * 1024 }).catch((error: { stderr?: string; message?: string }) => {
-        throw new Error(`refusing to push: uv rejected the edited ${file}. ${String(error.stderr || error.message).slice(0, 300)}`);
+    assertVisible(python);
+    const rootLinks: Record<string, string | null> = {};
+    for (const dir of ["/bin", "/sbin", "/lib", "/lib64"]) {
+      try {
+        rootLinks[dir] = lstatSync(dir).isSymbolicLink() ? readlinkSync(dir) : null;
+      } catch {
+        // absent on this host
+      }
+    }
+    const paths = { work, cache, uv, rootLinks };
+    const steps: [string, string[], boolean][] = [
+      ["refused", [python, "-I", "-c", PREFLIGHT], false],
+      ["rejected", sandboxedUv(["lock"], python), true],
+      ["rejected", sandboxedUv(["lock", "--check"], python), true],
+    ];
+    for (const [verb, argv, network] of steps) {
+      await run(bwrap, sandboxArgs(paths, argv, network), { maxBuffer: 8 * 1024 * 1024 }).catch((error: { stderr?: string; message?: string }) => {
+        throw new Error(`refusing to push: uv ${verb} the edited ${file}. ${String(error.stderr || error.message).trim().slice(0, 300)}`);
       });
     }
     return readFileSync(path.join(work, "uv.lock"), "utf8");
