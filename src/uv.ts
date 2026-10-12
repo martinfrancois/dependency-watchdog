@@ -231,3 +231,22 @@ export function assertSameVersions(lockBefore: string, lockAfter: string, remove
     );
   }
 }
+
+/**
+ * What in a pyproject.toml would make `uv lock` run a build backend despite --no-build.
+ *
+ * Dynamic metadata makes uv build the project itself to read it, and workspace members and
+ * `[tool.uv.sources]` bring in local or Git sources whose metadata may need the same. The scan is
+ * deliberately coarse: any such key anywhere, in any TOML form, counts. A false refusal costs a
+ * prune that has to be done by hand; a missed one runs repository code with the job's credentials.
+ */
+export function uvBuildBlockers(text: string): string[] {
+  const found = new Set<string>();
+  for (const raw of text.split("\n")) {
+    const line = raw.replace(/#.*$/, "");
+    if (/^\s*dynamic\s*=/.test(line) || /[{,]\s*dynamic\s*=/.test(line)) found.add("dynamic project metadata");
+    if (/\bsources\b\s*[.=\]]/.test(line)) found.add("uv sources");
+    if (/\bworkspace\b\s*[.=\]]/.test(line)) found.add("a uv workspace");
+  }
+  return [...found];
+}
