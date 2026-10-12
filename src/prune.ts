@@ -5,8 +5,8 @@
  */
 import { createHash } from "node:crypto";
 import { execFile } from "node:child_process";
-import { mkdtempSync, readFileSync, rmSync, writeFileSync, mkdirSync, renameSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { accessSync, constants, existsSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync, mkdirSync, renameSync } from "node:fs";
+import { homedir, tmpdir } from "node:os";
 import path from "node:path";
 import { promisify } from "node:util";
 
@@ -14,8 +14,8 @@ import { loadSettings, workspaceFileFor, statePath } from "./config.ts";
 import type { Settings } from "./types.ts";
 import { parseExclusions, publishedAt } from "./checks.ts";
 import {
-  assertSameVersions, assertUvOutcome, describeUvEntry, uvBuildBlockers, isUvSettingsFile, maturedUvEntries, parseUvExclusions,
-  removeUvEntries, uvCooldownMs,
+  assertSameVersions, assertUvOutcome, describeUvEntry, expectedLockAfterPrune, isUvSettingsFile, maturedUvEntries, parseUvExclusions,
+  homesRoot, removeUvEntries, sandboxArgs, uvCooldownMs,
 } from "./uv.ts";
 
 const run = promisify(execFile);
@@ -244,21 +244,15 @@ async function prunePnpm(repo: string, dir: string, file: string, text: string, 
 /**
  * Prune uv's exclude-newer-package table and re-lock.
  *
- * Unlike pnpm's list, the table is recorded in uv.lock, so the lock changes too and the guard is
- * different: uv must re-lock and accept the result with --check, and the set of locked package
- * versions must be identical before and after. A version change would mean the entry was still
- * holding something back, which is exactly what a matured entry must never do.
+ * Unlike pnpm's list, the table is recorded in uv.lock, so the lock changes too. uv re-locks a copy
+ * of the two files and must accept the result with --check, every locked package version must be
+ * unchanged, and the new lock must equal the old one minus exactly the removed entries. A version
+ * change would mean the entry was still holding something back, which a matured entry must never
+ * do.
  *
- * This job holds GitHub credentials, so uv must run no code from the repository or a release.
- * The pnpm prune passes --ignore-scripts for the same reason. Measured with uv 0.13.0, three ways
- * in, each closed separately:
- * - A source distribution's build: --no-build.
- * - The interpreter. uv runs the project environment's python (.venv/bin/python) to read its
- *   version even when --python names another, and follows .python-version to an executable when
- *   it does not. Hence a trusted interpreter found outside the clone, and a project environment
- *   path in a private directory that does not exist.
- * - The project's own build backend, which uv runs to read dynamic metadata despite --no-build.
- *   uvBuildBlockers refuses those files before uv sees them.
+ * This job holds GitHub credentials, and uv can run code from the repository or a release even
+ * with --no-build, so uv runs inside bubblewrap; see sandboxArgs. The pnpm prune passes
+ * --ignore-scripts for the same reason.
  */
 async function pruneUv(repo: string, dir: string, file: string, text: string, settings: Settings): Promise<PruneResult> {
   const full = path.join(dir, file);
@@ -269,42 +263,81 @@ async function pruneUv(repo: string, dir: string, file: string, text: string, se
   const labels = matured.map(describeUvEntry);
   if (DRY_RUN) return { repo, pruned: labels, dryRun: true };
 
-  const blockers = uvBuildBlockers(text);
-  if (blockers.length) {
-    throw new Error(
-      `refusing to run uv on ${file}: ${blockers.join("; ")}. uv would build the project or a ` +
-        "local source to read its metadata, which runs repository code with this job's credentials",
-    );
-  }
   const lockFile = path.posix.join(path.posix.dirname(file), "uv.lock");
   const lockBefore = readFileSync(path.join(dir, lockFile), "utf8");
   const names = matured.map((e) => e.name);
   const next = removeUvEntries(text, names);
   assertUvOutcome(entries, names, next, file);
-  writeFileSync(full, next);
+  const expectedLock = expectedLockAfterPrune(lockBefore, names);
 
-  const outside = mkdtempSync(path.join(tmpdir(), "prune-uv-"));
-  try {
-    const python = (await run(settings.uvCommand, ["python", "find", "--no-project"], { cwd: outside })).stdout.trim();
-    const env = { ...process.env, UV_PROJECT_ENVIRONMENT: path.join(outside, "absent") };
-    const uv = (args: string[]) =>
-      run(settings.uvCommand, [...args, "--no-build", "--python", python], { cwd: path.dirname(full), env, maxBuffer: 8 * 1024 * 1024 });
-    await uv(["lock"]);
-    await uv(["lock", "--check"]);
-  } catch (error) {
-    const e = error as { stderr?: string; message?: string };
-    throw new Error(`refusing to push: uv rejected the edited ${file}. ${String(e.stderr || e.message).slice(0, 300)}`);
-  } finally {
-    rmSync(outside, { recursive: true, force: true });
+  const relocked = await relockInSandbox(next, lockBefore, settings.uvCommand, file);
+  assertSameVersions(lockBefore, relocked, labels);
+  if (relocked !== expectedLock) {
+    throw new Error(
+      `refusing to push: uv's re-lock of ${file} differs from the old ${lockFile} by more than ` +
+        `the removed entries (${labels.join(", ")})`,
+    );
   }
-  assertSameVersions(lockBefore, readFileSync(path.join(dir, lockFile), "utf8"), labels);
-  const changed = await assertChangedFiles(dir, [file, lockFile], [file]);
+  writeFileSync(full, next);
+  writeFileSync(path.join(dir, lockFile), expectedLock);
+  const changed = await assertChangedFiles(dir, [file, lockFile], [file, lockFile]);
   const prUrl = await publishPrune(repo, dir, {
     file,
     staged: changed,
-    validation: `the edited ${file} retains exactly the expected entries, uv lock --no-build and uv lock --check accept it, every locked package version is unchanged, and no file besides ${changed.join(" and ")} changed.`,
+    validation: `the edited ${file} retains exactly the expected entries; uv lock and uv lock --check, run in a sandbox on a copy of both files, accept it; the re-locked ${lockFile} differs only by the removed entries, so every locked version is unchanged; and no other file changed.`,
   }, labels, settings);
   return { repo, pruned: labels, prUrl };
+}
+
+/** Find an executable the way a shell would, so the sandbox can mount the real file. */
+function which(command: string): string {
+  if (path.isAbsolute(command)) return realpathSync(command);
+  for (const dir of (process.env.PATH ?? "").split(path.delimiter)) {
+    const candidate = path.join(dir, command);
+    try {
+      accessSync(candidate, constants.X_OK);
+      return realpathSync(candidate);
+    } catch {
+      // not in this directory
+    }
+  }
+  throw new Error(`${command} is not on PATH`);
+}
+
+/** Run uv lock and uv lock --check in bubblewrap on a copy of the two files; return the new lock. */
+async function relockInSandbox(pyproject: string, lock: string, uvCommand: string, file: string): Promise<string> {
+  let bwrap: string;
+  try {
+    bwrap = which("bwrap");
+  } catch {
+    throw new Error(
+      "refusing to run uv: bubblewrap (bwrap) is not installed. The uv prune runs uv inside it, " +
+        "because uv can run code from the repository or a release with this job's credentials",
+    );
+  }
+  const uv = which(uvCommand);
+  const scratch = mkdtempSync(path.join(tmpdir(), "prune-uv-"));
+  try {
+    const work = path.join(scratch, "work");
+    const cache = path.join(scratch, "cache");
+    mkdirSync(work);
+    mkdirSync(cache);
+    writeFileSync(path.join(work, "pyproject.toml"), pyproject);
+    writeFileSync(path.join(work, "uv.lock"), lock);
+    // Found from an empty directory, so no project file can steer the choice.
+    const found = (await run(uv, ["python", "find", "--no-project", "--system"], { cwd: work })).stdout.trim();
+    const hidden = [...new Set(["/home", homesRoot(realpathSync(homedir()), (d) => { try { accessSync(d, constants.R_OK); return true; } catch { return false; } }), "/root", "/tmp", "/var/tmp", "/run/user"])]
+      .filter((d) => existsSync(d));
+    const paths = { work, cache, uv, python: realpathSync(found), hidden };
+    for (const args of [["lock"], ["lock", "--check"]]) {
+      await run(bwrap, sandboxArgs(paths, args), { maxBuffer: 8 * 1024 * 1024 }).catch((error: { stderr?: string; message?: string }) => {
+        throw new Error(`refusing to push: uv rejected the edited ${file}. ${String(error.stderr || error.message).slice(0, 300)}`);
+      });
+    }
+    return readFileSync(path.join(work, "uv.lock"), "utf8");
+  } finally {
+    rmSync(scratch, { recursive: true, force: true });
+  }
 }
 
 /**

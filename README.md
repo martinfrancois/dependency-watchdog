@@ -9,8 +9,8 @@ incidents and prepares tested repairs.
 - **recovery** calls an installed Codex CLI to investigate confirmed incidents. See [Codex recovery](docs/recovery.md).
 - **Tumbleweed mirror** is a GitHub Actions workflow, not a local job. It copies each openSUSE Tumbleweed snapshot to `ghcr.io/martinfrancois/tumbleweed` before registry.opensuse.org deletes it, so a snapshot pinned under the 7-day cooldown still exists when it is used. See [Tumbleweed mirror](docs/tumbleweed-mirror.md).
 
-No dependencies. Node's standard library, `git` and the GitHub CLI, plus `pnpm` or `uv` for the
-prune to validate the file it edits. A watchdog that
+No dependencies. Node's standard library, `git` and the GitHub CLI, plus `pnpm`, or `uv` and
+bubblewrap, for the prune to validate the file it edits. A watchdog that
 can be broken by a dependency update would be an unusually stupid way for this to fail.
 
 ## Who this is for
@@ -267,15 +267,20 @@ or `exclude-newer-package` entries whose cutoff is. It validates the edited file
 other files changed, and reuses an open prune PR for the same entries. It respects Git hooks and
 leaves merging to the operator.
 
-uv records the table in `uv.lock`, so a uv prune changes both files. It runs `uv lock --no-build`
-and `uv lock --no-build --check`, then compares every locked package version before and after and
-refuses to push if any moved. The prune holds GitHub credentials, so uv must run no code from the
-repository or a release; the pnpm side passes `--ignore-scripts` for the same reason. `--no-build`
-stops source distribution builds. uv runs with an interpreter found outside the clone and a project
-environment path that does not exist, because otherwise it executes the repository's
-`.venv/bin/python`, or whatever `.python-version` points at, to read the Python version. A
-`pyproject.toml` with dynamic metadata, `[tool.uv.sources]` or a uv workspace is refused, because uv
-runs build backends to read their metadata even with `--no-build`; prune those by hand.
+uv records the table in `uv.lock`, so a uv prune changes both files. It re-locks a copy of the
+edited `pyproject.toml` and the current `uv.lock` with `uv lock` and `uv lock --check`, and refuses
+to push unless every locked package version is unchanged and the new lock differs from the old one
+by exactly the removed entries.
+
+The prune holds GitHub credentials, and uv can run code it was handed even with `--no-build`: it
+executes the project environment's interpreter to read its version, follows `.python-version` to an
+executable, and builds the root project to read dynamic metadata. So uv runs inside bubblewrap
+(`bwrap`), with every home directory, `/tmp`, `/var/tmp` and `/run/user` replaced by empty
+directories, the environment cleared, and nothing writable but the copy and a throwaway cache. The
+network stays, because uv needs the package index. Without `bwrap` the uv prune refuses to run.
+Projects whose metadata needs more than these two files, such as dynamic metadata, uv workspaces or
+local sources, fail validation and have to be pruned by hand. The pnpm side passes
+`--ignore-scripts` for the same reason.
 
 It is a job rather than a CI check on purpose. A check that fails when an entry turns eight days old
 is triggered by the passage of time, not by a change. It would go red on an unrelated commit and,
@@ -297,10 +302,11 @@ gap:
    than one anticipated shape of it.
 2. **The package manager must accept the file.** `pnpm install --lockfile-only` runs against a pnpm
    edit; if pnpm rejects it, the original is restored and nothing is pushed. A uv edit must pass
-   `uv lock` and `uv lock --check`.
+   `uv lock` and `uv lock --check`, run in a sandbox.
 3. **Resolution must not change.** For pnpm, only the workspace file may change: a touched lockfile
    would mean the edit altered resolution, which removing a matured entry must never do. For uv,
-   only `pyproject.toml` and `uv.lock` may change, and every locked version must stay the same.
+   only `pyproject.toml` and `uv.lock` may change, every locked version must stay the same, and the
+   lock may lose nothing but the removed entries.
 4. **`main()` runs only as the process entry**, so importing a module for a test cannot perform a
    live push. That is how the incident reached production.
 
