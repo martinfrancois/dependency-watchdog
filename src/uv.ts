@@ -233,20 +233,78 @@ export function assertSameVersions(lockBefore: string, lockAfter: string, remove
 }
 
 /**
- * What in a pyproject.toml would make `uv lock` run a build backend despite --no-build.
+ * The uv.lock a prune expects: the same file without the removed entries in its
+ * `[options.exclude-newer-package]` table, and without the table once it is empty.
  *
- * Dynamic metadata makes uv build the project itself to read it, and workspace members and
- * `[tool.uv.sources]` bring in local or Git sources whose metadata may need the same. The scan is
- * deliberately coarse: any such key anywhere, in any TOML form, counts. A false refusal costs a
- * prune that has to be done by hand; a missed one runs repository code with the job's credentials.
+ * uv's own re-lock must produce exactly this. Comparing the whole file, not only versions, means
+ * nothing uv or code running under it wrote can reach the commit except what the prune intended.
  */
-export function uvBuildBlockers(text: string): string[] {
-  const found = new Set<string>();
-  for (const raw of text.split("\n")) {
-    const line = raw.replace(/#.*$/, "");
-    if (/^\s*dynamic\s*=/.test(line) || /[{,]\s*dynamic\s*=/.test(line)) found.add("dynamic project metadata");
-    if (/\bsources\b\s*[.=\]]/.test(line)) found.add("uv sources");
-    if (/\bworkspace\b\s*[.=\]]/.test(line)) found.add("a uv workspace");
+export function expectedLockAfterPrune(lockText: string, names: string[]): string {
+  const doomed = new Set(names.map(normalizeName));
+  const lines = lockText.split("\n");
+  const start = lines.findIndex((l) => l.trim() === "[options.exclude-newer-package]");
+  if (start === -1) return lockText;
+  let end = start + 1;
+  while (end < lines.length && !HEADER.test(lines[end] ?? "")) end++;
+  const drop = new Set<number>();
+  let kept = 0;
+  for (let i = start + 1; i < end; i++) {
+    const m = ENTRY.exec(lines[i] ?? "");
+    if (!m) continue;
+    if (doomed.has(normalizeName(m[1] ?? m[2] ?? ""))) drop.add(i);
+    else kept++;
   }
-  return [...found];
+  if (!kept) for (let i = start; i < end; i++) drop.add(i);
+  return lines.filter((_, i) => !drop.has(i)).join("\n");
+}
+
+export type SandboxPaths = {
+  /** Directory holding only the edited pyproject.toml and the current uv.lock. */
+  work: string;
+  /** Fresh uv cache for this run, so nothing a run writes there is read by the next. */
+  cache: string;
+  /** Resolved uv executable and Python interpreter, mounted read-only. */
+  uv: string;
+  python: string;
+  /** Directories to hide behind an empty tmpfs: every home, the temp dirs, user runtime sockets. */
+  hidden: string[];
+};
+
+/**
+ * bubblewrap arguments that run uv with no access to this job's credentials.
+ *
+ * uv can run code it should not even with --no-build: it executes the project environment's
+ * interpreter to read its version, follows .python-version to an executable, and builds the root
+ * project to read dynamic metadata (all measured with uv 0.13.0). Rather than chase each one, uv
+ * runs in a namespace where the homes are empty, the environment is cleared, and the only writable
+ * places are a copy of the two files and a throwaway cache. The network stays, because uv needs the
+ * index; there is nothing left to send.
+ */
+export function sandboxArgs(p: SandboxPaths, uvArgs: string[]): string[] {
+  const args = ["--die-with-parent", "--unshare-all", "--share-net", "--ro-bind", "/", "/"];
+  for (const dir of p.hidden) args.push("--tmpfs", dir);
+  args.push("--dev", "/dev", "--proc", "/proc");
+  // Mount points are created inside the tmpfs over /tmp, because the root is read-only.
+  args.push("--bind", p.work, "/tmp/work", "--bind", p.cache, "/tmp/cache");
+  args.push("--ro-bind", p.uv, "/tmp/bin/uv");
+  const prefix = path.dirname(path.dirname(p.python));
+  if (!/^\/usr\//.test(`${prefix}/`)) args.push("--ro-bind", prefix, prefix);
+  args.push("--clearenv", "--setenv", "PATH", "/usr/bin:/bin", "--setenv", "HOME", "/tmp/work");
+  args.push("--setenv", "UV_CACHE_DIR", "/tmp/cache", "--chdir", "/tmp/work");
+  args.push("/tmp/bin/uv", ...uvArgs, "--no-build", "--python", p.python);
+  return args;
+}
+
+/**
+ * The directory to hide so that every user's home goes, not only this one: the directory holding
+ * the home, raised while its parent cannot be listed. bubblewrap cannot create a mount point below
+ * a directory it may only traverse, so on a host whose homes sit under such a directory the tmpfs
+ * goes on the highest one.
+ */
+export function homesRoot(home: string, readable: (dir: string) => boolean): string {
+  let dir = path.dirname(home);
+  while (path.dirname(dir) !== dir && path.dirname(dir) !== "/" && !readable(path.dirname(dir))) {
+    dir = path.dirname(dir);
+  }
+  return dir;
 }

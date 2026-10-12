@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 
 import {
   assertSameVersions, assertUvOutcome, isUvSettingsFile, lockedVersions, maturedUvEntries, parseSpan, parseUvExclusions,
-  removeUvEntries, uvBuildBlockers, uvCooldownMs,
+  removeUvEntries, expectedLockAfterPrune, homesRoot, sandboxArgs, uvCooldownMs,
 } from "./uv.ts";
 
 const DAY = 86_400_000;
@@ -225,21 +225,80 @@ version = "12.3.0"
   });
 });
 
-describe("uvBuildBlockers", () => {
-  test("a static project with no sources or workspace is safe to lock", () => {
-    assert.deepEqual(uvBuildBlockers(pyproject), []);
+describe("expectedLockAfterPrune", () => {
+  const lock = `version = 1
+
+[options]
+exclude-newer-span = "P7D"
+
+[options.exclude-newer-package]
+ast-serialize = "2026-09-13T18:48:56Z"
+iniconfig = "2026-10-06T22:48:39Z"
+
+[[package]]
+name = "iniconfig"
+version = "2.3.1"
+`;
+
+  test("drops only the removed entry", () => {
+    assert.equal(expectedLockAfterPrune(lock, ["ast_serialize"]), lock.replace('ast-serialize = "2026-09-13T18:48:56Z"\n', ""));
   });
 
-  test("finds dynamic metadata, sources and workspaces in every TOML form", () => {
-    assert.deepEqual(uvBuildBlockers('[project]\nname = "x"\ndynamic = ["version"]\n'), ["dynamic project metadata"]);
-    assert.deepEqual(uvBuildBlockers('project = { name = "x", dynamic = ["version"] }\n'), ["dynamic project metadata"]);
-    assert.deepEqual(uvBuildBlockers('[tool.uv.sources]\nlib = { path = "lib" }\n'), ["uv sources"]);
-    assert.deepEqual(uvBuildBlockers('[tool.uv]\nsources = { lib = { path = "lib" } }\n'), ["uv sources"]);
-    assert.deepEqual(uvBuildBlockers('tool.uv.sources.lib = { path = "lib" }\n'), ["uv sources"]);
-    assert.deepEqual(uvBuildBlockers('[tool.uv.workspace]\nmembers = ["pkg/*"]\n'), ["a uv workspace"]);
+  test("drops the table header and its blank line once the table is empty", () => {
+    assert.equal(
+      expectedLockAfterPrune(lock, ["ast-serialize", "iniconfig"]),
+      'version = 1\n\n[options]\nexclude-newer-span = "P7D"\n\n[[package]]\nname = "iniconfig"\nversion = "2.3.1"\n',
+    );
   });
 
-  test("ignores the words in comments", () => {
-    assert.deepEqual(uvBuildBlockers("# no dynamic = metadata, no sources = here, no workspace]\n"), []);
+  test("is a no-op without the table", () => {
+    assert.equal(expectedLockAfterPrune("version = 1\n", ["x"]), "version = 1\n");
+  });
+});
+
+describe("sandboxArgs", () => {
+  const paths = {
+    work: "/tmp/prune-uv-1/work", cache: "/tmp/prune-uv-1/cache", uv: "/opt/uv/uv",
+    python: "/usr/bin/python3.13", hidden: ["/home", "/tmp", "/var/tmp", "/run/user"],
+  };
+  const args = sandboxArgs(paths, ["lock"]);
+  const pairs = (flag: string) => args.flatMap((a, i) => (a === flag ? [args[i + 1]] : []));
+
+  test("hides every listed directory and clears the environment", () => {
+    assert.deepEqual(pairs("--tmpfs"), paths.hidden);
+    assert.ok(args.includes("--clearenv"));
+    assert.ok(args.includes("--unshare-all"));
+    assert.deepEqual(pairs("--setenv"), ["PATH", "HOME", "UV_CACHE_DIR"]);
+  });
+
+  test("mounts the copy and the cache after hiding /tmp, and only them writable", () => {
+    assert.ok(args.indexOf("--bind") > args.lastIndexOf("--tmpfs"));
+    assert.deepEqual(pairs("--bind"), [paths.work, paths.cache]);
+  });
+
+  test("pins the interpreter and never builds", () => {
+    assert.deepEqual(args.slice(-5), ["/tmp/bin/uv", "lock", "--no-build", "--python", "/usr/bin/python3.13"]);
+  });
+
+  test("mounts an interpreter outside /usr read-only at its own path", () => {
+    const out = sandboxArgs({ ...paths, python: "/opt/py/bin/python3" }, ["lock"]);
+    const i = out.lastIndexOf("--ro-bind");
+    assert.deepEqual(out.slice(i, i + 3), ["--ro-bind", "/opt/py", "/opt/py"]);
+    assert.ok(!sandboxArgs(paths, ["lock"]).includes("/usr"), "nothing under /usr is mounted again");
+  });
+});
+
+describe("homesRoot", () => {
+  test("is the directory holding the homes when its parent can be listed", () => {
+    assert.equal(homesRoot("/home/alice", () => true), "/home");
+  });
+
+  test("rises past directories that may only be traversed", () => {
+    const traverseOnly = new Set(["/srv/homes", "/srv/homes/live"]);
+    assert.equal(homesRoot("/srv/homes/live/alice", (d) => !traverseOnly.has(d)), "/srv/homes");
+  });
+
+  test("never returns the root", () => {
+    assert.equal(homesRoot("/a/b/alice", () => false), "/a");
   });
 });

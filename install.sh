@@ -39,6 +39,12 @@ if ! PATH="$NODE_BIN:$PATH" command -v pnpm >/dev/null 2>&1; then
   say "         Install pnpm (corepack enable) if any watched repository uses one."
 fi
 
+# The uv prune runs uv inside bubblewrap so code it is handed cannot reach these credentials, and
+# refuses to run without it.
+if ! command -v bwrap >/dev/null 2>&1; then
+  say "warning: bubblewrap (bwrap) is not installed. The prune will refuse to prune uv projects."
+fi
+
 [ -f "$SETTINGS" ] || die "No $SETTINGS. Copy config.example.json there and list your repositories."
 [ -f "$SECRETS" ]  || die "No $SECRETS. Copy config.env.example there and fill it in."
 # Only actual assignments count. The example file explains the word PLACEHOLDER in a comment, and
