@@ -16,7 +16,10 @@ Environment=DEP_WATCHDOG_CONFIG_DIR=__CONFIG_DIR__
 Environment=PATH=__NODE_BIN__:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin
 TimeoutStartSec=30min
 
-# Looser than the watchdog because this one clones repositories and runs pnpm, which needs a
+# uv, which validates a pruned pyproject.toml, is found on this PATH only when installed in a
+# system directory or beside node; otherwise the settings file names it with "uvCommand".
+
+# Looser than the watchdog because this one clones repositories and runs pnpm or uv, which need a
 # writable store and cache. It still cannot write anywhere in the home directory except those.
 PrivateTmp=true
 ProtectSystem=strict

@@ -56,7 +56,8 @@ and orphaned every entry. The unparseable result went straight to `main` because
 "edit the text" and "git push" ever looked at the result.
 
 Where a real tool can validate the file, use it rather than a second parser of your own. For pnpm
-settings that means running `pnpm install --lockfile-only` and aborting if pnpm rejects the file.
+settings that means running `pnpm install --lockfile-only` and aborting if pnpm rejects the file;
+for a uv `pyproject.toml` it means `uv lock` and `uv lock --check`, plus unchanged locked versions.
 
 ### Keep entry points separate from logic
 

@@ -9,6 +9,7 @@ import {
   strictChecksRequired as realStrictChecksRequired,
 } from "./github.ts";
 import { workspaceFileFor } from "./config.ts";
+import { describeUvEntry, isUvSettingsFile, maturedUvEntries, parseUvExclusions, uvCooldownMs } from "./uv.ts";
 import type { CheckRun, Commit, Finding, PullRequest, Settings } from "./types.ts";
 
 /**
@@ -178,7 +179,8 @@ function isMaintenance(pr: PullRequest): boolean {
  * Cooldown exclusions that should have been pruned.
  *
  * Every entry is meant to be temporary. A list that stops shrinking means the prune is not running,
- * and each stale entry is a package permanently exempt from the cooldown.
+ * and each stale entry is a package permanently exempt from the cooldown. A stale uv entry is also a
+ * package held at its fixed version, because its own cutoff overrides the global one.
  */
 export async function staleExclusions(
   repo: string,
@@ -188,15 +190,19 @@ export async function staleExclusions(
   const file = workspaceFileFor(settings, repo);
   const text = await deps.fileContents(repo, file);
   if (!text) return [];
-  const entries = parseExclusions(text);
-  if (!entries.length) return [];
 
   const cutoff = settings.thresholds.cooldownDays * DAY;
   const stale: string[] = [];
-  for (const entry of entries) {
-    const published = await deps.publishedAt(entry);
-    if (published === null) throw new Error(`Cannot determine release age for ${entry}`);
-    if (Date.now() - published >= cutoff) stale.push(entry);
+  if (isUvSettingsFile(file)) {
+    // A uv entry carries its own date, so the repository's cooldown is all that is needed.
+    const entries = parseUvExclusions(text);
+    stale.push(...maturedUvEntries(entries, uvCooldownMs(text) ?? cutoff, Date.now()).map(describeUvEntry));
+  } else {
+    for (const entry of parseExclusions(text)) {
+      const published = await deps.publishedAt(entry);
+      if (published === null) throw new Error(`Cannot determine release age for ${entry}`);
+      if (Date.now() - published >= cutoff) stale.push(entry);
+    }
   }
   if (!stale.length) return [];
   return [

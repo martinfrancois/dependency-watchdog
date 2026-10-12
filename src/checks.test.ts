@@ -223,6 +223,33 @@ describe("staleExclusions", () => {
     const out = await staleExclusions("o/r", settings, deps({ fileContents: async () => "minimumReleaseAge: 10080\n" }));
     assert.deepEqual(out, []);
   });
+
+  describe("in a uv repository", () => {
+    const uvSettings = { ...settings, workspaceFiles: { "o/r": "pyproject.toml" } };
+    const iso = (ms: number) => new Date(ms).toISOString().replace(/\.\d+Z$/, "Z");
+    const toml = (cooldown: string) => `[tool.uv]\nexclude-newer = "${cooldown}"\n\n[tool.uv.exclude-newer-package]\n` +
+      `old = "${iso(Date.now() - 8 * DAY)}"\nyoung = "${iso(Date.now() - 2 * DAY)}"\n`;
+
+    test("dates entries by their own cutoff and never looks anything up", async () => {
+      const out = await staleExclusions("o/r", uvSettings, deps({
+        fileContents: async (_r, file) => (file === "pyproject.toml" ? toml("7 days") : null),
+        publishedAt: async () => assert.fail("a uv entry needs no registry lookup"),
+      }));
+      assert.equal(out.length, 1);
+      assert.equal(out[0]!.file, "pyproject.toml");
+      assert.match(out[0]!.entries![0]!, /^old \d{4}-/);
+    });
+
+    test("uses the repository's own cooldown over the configured one", async () => {
+      const out = await staleExclusions("o/r", uvSettings, deps({ fileContents: async () => toml("10 days") }));
+      assert.deepEqual(out, []);
+    });
+
+    test("is silent without the table", async () => {
+      const out = await staleExclusions("o/r", uvSettings, deps({ fileContents: async () => '[project]\nname = "x"\n' }));
+      assert.deepEqual(out, []);
+    });
+  });
 });
 
 describe("isRenovateCommit", () => {

@@ -5,17 +5,18 @@ release-age exclusion lists from silently becoming permanent. Optional Codex rec
 incidents and prepares tested repairs.
 
 - **watchdog** reports persistent findings and sends weekly reminders. Inspect its run report to check coverage.
-- **prune** proposes a PR removing `minimumReleaseAgeExclude` entries whose version has aged past the cooldown.
+- **prune** proposes a PR removing pnpm `minimumReleaseAgeExclude` or uv `exclude-newer-package` entries that have aged past the cooldown.
 - **recovery** calls an installed Codex CLI to investigate confirmed incidents. See [Codex recovery](docs/recovery.md).
 - **Tumbleweed mirror** is a GitHub Actions workflow, not a local job. It copies each openSUSE Tumbleweed snapshot to `ghcr.io/martinfrancois/tumbleweed` before registry.opensuse.org deletes it, so a snapshot pinned under the 7-day cooldown still exists when it is used. See [Tumbleweed mirror](docs/tumbleweed-mirror.md).
 
-No dependencies. Node's standard library, `git` and the GitHub CLI, nothing else. A watchdog that
+No dependencies. Node's standard library, `git` and the GitHub CLI, plus `pnpm` or `uv` for the
+prune to validate the file it edits. A watchdog that
 can be broken by a dependency update would be an unusually stupid way for this to fail.
 
 ## Who this is for
 
 You have several repositories on Renovate with `lockFileMaintenance` and a release-age cooldown
-(`minimumReleaseAge` in pnpm, or Renovate's own), you automerge routine updates, and you do not read
+(`minimumReleaseAge` in pnpm, `exclude-newer` in uv, or Renovate's own), you automerge routine updates, and you do not read
 every pull request. The failure mode you are worried about is not a bad update, it is the automation
 quietly stopping and nobody noticing for a month.
 
@@ -71,7 +72,11 @@ writes it into the units, defaulting to the path above.
 Only `repos` is required. Repositories are listed rather than discovered from an account, so that a
 rename or transfer surfaces as a failing lookup instead of silently dropping out of coverage.
 
-For monorepos, point `workspaceFiles` at wherever the pnpm settings actually live. Set `commitName`
+For monorepos, point `workspaceFiles` at wherever the pnpm settings actually live. For a uv
+repository, point it at `pyproject.toml`; a path ending in that name switches the repository to the uv
+format described below. The prune runs `uvCommand` (default `uv`) for those, and the unit's `PATH`
+holds only node's directory and the system directories, so give the absolute path to a uv installed
+by a version manager. Set `commitName`
 and `commitEmail` before enabling the prune; it refuses to push without them rather than attributing
 automated commits to whatever identity happens to be on the machine.
 
@@ -224,15 +229,49 @@ The matching Renovate side, so the two agree rather than fighting:
 assuming the best. `strict` stops Renovate raising a pull request that pnpm would then refuse to
 install, which otherwise produces a queue of pull requests that cannot go green.
 
+### The exclusion check for uv
+
+```toml
+# pyproject.toml
+[tool.uv]
+exclude-newer = "7 days"
+
+[tool.uv.exclude-newer-package]
+# ruff 0.17.0: security fix. Prune after 2026-10-16T19:47:30Z.
+ruff = "2026-10-09T19:47:30Z"
+```
+
+uv has no exact-version exemption. An entry is a per-package cutoff instead, set just past the last
+upload of the fixed version, so it admits that version and nothing newer. The date is all the check
+needs: an entry has matured once it is one cooldown old, because the global cutoff then admits every
+file the entry admitted. No registry lookup is involved. The cooldown is read from `exclude-newer`
+in the same file when it is a relative span, and falls back to `thresholds.cooldownDays` otherwise.
+
+Pruning matters more here than for pnpm. A per-package cutoff overrides the global one, so a
+forgotten entry holds its package at the fixed version: a pinned dependency fails its next Renovate
+update, and a transitive one silently stops receiving updates.
+
+Only the `[tool.uv.exclude-newer-package]` table form is read. An inline table or dotted key with
+the same meaning is reported as an error rather than read as "no entries". Values that are not
+timestamps, such as `false`, are never reported or pruned: they are deliberate settings, not
+security exemptions.
+
 ### The failing-pull-request check needs nothing
 
 It reads check runs and commit statuses, which exist regardless of configuration.
 
 ## What the prune does
 
-Proposes a PR removing `minimumReleaseAgeExclude` entries whose version is older than the cooldown.
-It validates the edited workspace, checks that no other files changed, and reuses an open prune PR
-for the same entries. It respects Git hooks and leaves merging to the operator.
+Proposes a PR removing `minimumReleaseAgeExclude` entries whose version is older than the cooldown,
+or `exclude-newer-package` entries whose cutoff is. It validates the edited file, checks that no
+other files changed, and reuses an open prune PR for the same entries. It respects Git hooks and
+leaves merging to the operator.
+
+uv records the table in `uv.lock`, so a uv prune changes both files. It runs `uv lock --no-build`
+and `uv lock --no-build --check`, then compares every locked package version before and after and
+refuses to push if any moved. `--no-build` keeps it from building a source distribution, which would
+run code from a release on a machine that holds GitHub credentials; the pnpm side passes
+`--ignore-scripts` for the same reason.
 
 It is a job rather than a CI check on purpose. A check that fails when an entry turns eight days old
 is triggered by the passage of time, not by a change. It would go red on an unrelated commit and,
@@ -252,10 +291,12 @@ gap:
 1. **Outcome invariant.** The edited file is re-parsed and the entries that should remain must
    remain. This is the check that catches the original bug, and structural damage generally rather
    than one anticipated shape of it.
-2. **pnpm must accept the file.** `pnpm install --lockfile-only` runs against the edit; if pnpm
-   rejects it, the original is restored and nothing is pushed.
-3. **Only the expected file may change.** A touched lockfile would mean the edit altered resolution,
-   which removing a matured entry must never do.
+2. **The package manager must accept the file.** `pnpm install --lockfile-only` runs against a pnpm
+   edit; if pnpm rejects it, the original is restored and nothing is pushed. A uv edit must pass
+   `uv lock` and `uv lock --check`.
+3. **Resolution must not change.** For pnpm, only the workspace file may change: a touched lockfile
+   would mean the edit altered resolution, which removing a matured entry must never do. For uv,
+   only `pyproject.toml` and `uv.lock` may change, and every locked version must stay the same.
 4. **`main()` runs only as the process entry**, so importing a module for a test cannot perform a
    live push. That is how the incident reached production.
 
@@ -308,9 +349,10 @@ it when changing the prune schedule.
 
 ## Limitations
 
-- **pnpm only.** The exclusion logic reads `minimumReleaseAgeExclude` from `pnpm-workspace.yaml`.
-  npm's `min-release-age` and bun's `minimumReleaseAge` have no equivalent list, so the prune has
-  nothing to do there. The other four checks work regardless of package manager.
+- **pnpm and uv only.** The exclusion logic reads `minimumReleaseAgeExclude` from
+  `pnpm-workspace.yaml` and `[tool.uv.exclude-newer-package]` from `pyproject.toml`, one file per
+  repository. npm's `min-release-age` and bun's `minimumReleaseAge` have no equivalent list, so the
+  prune has nothing to do there. The other four checks work regardless of package manager.
 - **Telegram only.** The notifier is one small module; adding another channel means implementing one
   function.
 - **GitHub only**, through `gh`.

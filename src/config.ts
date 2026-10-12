@@ -51,9 +51,19 @@ export const DEFAULTS: Settings = {
     workspaceRoot: "/var/tmp/dep-watchdog-recovery", timeoutMinutes: 90, maxAttempts: 2,
     allowWatchdogMerge: false,
   },
-  /** Path to the pnpm settings file, relative to the repo root. Per-repo overrides below. */
+  /**
+   * Path to the file holding the release-age exclusions, relative to the repo root. Per-repo
+   * overrides below. A path ending in pyproject.toml means uv's exclude-newer-package table,
+   * anything else pnpm's minimumReleaseAgeExclude.
+   */
   workspaceFile: "pnpm-workspace.yaml",
   workspaceFiles: {},
+  /**
+   * The uv the prune runs to validate an edited pyproject.toml. A name is looked up on the unit's
+   * PATH, which install.sh limits to node's directory and the system directories, so a uv installed
+   * by a version manager needs its absolute path here.
+   */
+  uvCommand: "uv",
   /** Identity for commits the prune makes. Must be set before the prune will push. */
   commitName: null,
   commitEmail: null,
@@ -146,7 +156,7 @@ export function loadSettings(): Settings {
   return settings;
 }
 
-/** Where a given repository keeps its pnpm settings. */
+/** Where a given repository keeps its release-age exclusions. */
 export function workspaceFileFor(settings: Settings, repo: string): string {
   return settings.workspaceFiles[repo] ?? settings.workspaceFile;
 }

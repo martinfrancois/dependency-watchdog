@@ -13,6 +13,10 @@ import { promisify } from "node:util";
 import { loadSettings, workspaceFileFor, statePath } from "./config.ts";
 import type { Settings } from "./types.ts";
 import { parseExclusions, publishedAt } from "./checks.ts";
+import {
+  assertSameVersions, assertUvOutcome, describeUvEntry, isUvSettingsFile, maturedUvEntries, parseUvExclusions,
+  removeUvEntries, uvCooldownMs,
+} from "./uv.ts";
 
 const run = promisify(execFile);
 const DRY_RUN = process.argv.includes("--dry-run");
@@ -176,71 +180,136 @@ export function assertPruneOutcome(
 
 async function pruneRepo(repo: string, settings: Settings): Promise<PruneResult> {
   const file = workspaceFileFor(settings, repo);
-  const cutoff = settings.thresholds.cooldownDays * 24 * 3600_000;
   const dir = mkdtempSync(path.join(tmpdir(), "prune-"));
   try {
     await git(dir, "clone", ...(DRY_RUN ? ["--depth", "1"] : []), "--quiet", `https://github.com/${repo}.git`, ".");
-    const full = path.join(dir, file);
     let text: string;
     try {
-      text = readFileSync(full, "utf8");
+      text = readFileSync(path.join(dir, file), "utf8");
     } catch {
       return { repo, skipped: "no workspace file" };
     }
-
-    const entries = parseExclusions(text);
-    if (!entries.length) return { repo, pruned: [] };
-
-    const matured = await selectMatured(entries, cutoff, publishedAt);
-    if (!matured.length) return { repo, pruned: [] };
-
-    if (DRY_RUN) return { repo, pruned: matured, dryRun: true };
-
-    const next = removeEntries(text, matured);
-
-    // Guard one: the edit removed exactly the entries we chose, and nothing else.
-    assertPruneOutcome(entries, matured, next, file);
-
-    // Guard two: never push a file this process cannot itself parse. Nothing between "edit the
-    // text" and "git push" used to look at the result, which is how a regex bug became two dead
-    // main branches. pnpm is the authority on this file, so ask pnpm.
-    writeFileSync(full, next);
-    const check = await run("pnpm", ["install", "--lockfile-only", "--ignore-scripts"], {
-      cwd: path.dirname(full),
-      env: { ...process.env, CI: "1" },
-    }).catch((e: { stderr?: string; message?: string }) => ({
-      failed: true as const,
-      message: e.stderr || e.message || "unknown error",
-    }));
-    if ("failed" in check && check.failed) {
-      writeFileSync(full, text);
-      throw new Error(
-        `refusing to push: pnpm rejected the edited ${file}. ${String(check.message).slice(0, 300)}`,
-      );
-    }
-    // Only the workspace file should change; a lockfile touched here would mean the edit altered
-    // resolution, which a matured-entry removal must never do.
-    // Ask git for bare paths rather than parsing porcelain by column offset. The status line is
-    // "XY path", so the path begins at column 3, but git() trims its output and the leading space
-    // of an unstaged change goes with it, which silently ate the first character of every path and
-    // made this guard reject a correct edit as "unexpected changes beyond ...: npm-workspace.yaml".
-    const tracked = await git(dir, "diff", "--name-only", "HEAD");
-    const untracked = await git(dir, "ls-files", "--others", "--exclude-standard");
-    const changed = [...tracked.split("\n"), ...untracked.split("\n")]
-      .map((l) => l.trim())
-      .filter(Boolean);
-    const unexpected = changed.filter((f) => f !== file);
-    if (unexpected.length) {
-      throw new Error(
-        `refusing to push: unexpected changes beyond ${file}: ${unexpected.join(", ")}`,
-      );
-    }
-    const prUrl = await publishPrune(repo, dir, file, matured, settings);
-    return { repo, pruned: matured, prUrl };
-
+    return isUvSettingsFile(file)
+      ? await pruneUv(repo, dir, file, text, settings)
+      : await prunePnpm(repo, dir, file, text, settings);
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
+}
+
+async function prunePnpm(repo: string, dir: string, file: string, text: string, settings: Settings): Promise<PruneResult> {
+  const full = path.join(dir, file);
+  const cutoff = settings.thresholds.cooldownDays * 24 * 3600_000;
+  const entries = parseExclusions(text);
+  if (!entries.length) return { repo, pruned: [] };
+
+  const matured = await selectMatured(entries, cutoff, publishedAt);
+  if (!matured.length) return { repo, pruned: [] };
+
+  if (DRY_RUN) return { repo, pruned: matured, dryRun: true };
+
+  const next = removeEntries(text, matured);
+
+  // Guard one: the edit removed exactly the entries we chose, and nothing else.
+  assertPruneOutcome(entries, matured, next, file);
+
+  // Guard two: never push a file this process cannot itself parse. Nothing between "edit the
+  // text" and "git push" used to look at the result, which is how a regex bug became two dead
+  // main branches. pnpm is the authority on this file, so ask pnpm.
+  writeFileSync(full, next);
+  const check = await run("pnpm", ["install", "--lockfile-only", "--ignore-scripts"], {
+    cwd: path.dirname(full),
+    env: { ...process.env, CI: "1" },
+  }).catch((e: { stderr?: string; message?: string }) => ({
+    failed: true as const,
+    message: e.stderr || e.message || "unknown error",
+  }));
+  if ("failed" in check && check.failed) {
+    writeFileSync(full, text);
+    throw new Error(
+      `refusing to push: pnpm rejected the edited ${file}. ${String(check.message).slice(0, 300)}`,
+    );
+  }
+  // Only the workspace file should change; a lockfile touched here would mean the edit altered
+  // resolution, which a matured-entry removal must never do.
+  await assertChangedFiles(dir, [file], [file]);
+  const prUrl = await publishPrune(repo, dir, {
+    file,
+    staged: [file],
+    validation: "the edited YAML retains exactly the expected exclusions, and pnpm install --lockfile-only --ignore-scripts accepts it without changing other files.",
+  }, matured, settings);
+  return { repo, pruned: matured, prUrl };
+}
+
+/**
+ * Prune uv's exclude-newer-package table and re-lock.
+ *
+ * Unlike pnpm's list, the table is recorded in uv.lock, so the lock changes too and the guard is
+ * different: uv must re-lock and accept the result with --check, and the set of locked package
+ * versions must be identical before and after. A version change would mean the entry was still
+ * holding something back, which is exactly what a matured entry must never do.
+ *
+ * --no-build because building a source distribution runs code from the release, and this job
+ * holds GitHub credentials; the pnpm prune passes --ignore-scripts for the same reason.
+ */
+async function pruneUv(repo: string, dir: string, file: string, text: string, settings: Settings): Promise<PruneResult> {
+  const full = path.join(dir, file);
+  const entries = parseUvExclusions(text);
+  const cooldown = uvCooldownMs(text) ?? settings.thresholds.cooldownDays * 24 * 3600_000;
+  const matured = maturedUvEntries(entries, cooldown, Date.now());
+  if (!matured.length) return { repo, pruned: [] };
+  const labels = matured.map(describeUvEntry);
+  if (DRY_RUN) return { repo, pruned: labels, dryRun: true };
+
+  const lockFile = path.posix.join(path.posix.dirname(file), "uv.lock");
+  const lockBefore = readFileSync(path.join(dir, lockFile), "utf8");
+  const names = matured.map((e) => e.name);
+  const next = removeUvEntries(text, names);
+  assertUvOutcome(entries, names, next, file);
+  writeFileSync(full, next);
+
+  const uv = (args: string[]) =>
+    run(settings.uvCommand, args, { cwd: path.dirname(full), maxBuffer: 8 * 1024 * 1024 });
+  try {
+    await uv(["lock", "--no-build"]);
+    await uv(["lock", "--no-build", "--check"]);
+  } catch (error) {
+    const e = error as { stderr?: string; message?: string };
+    throw new Error(`refusing to push: uv rejected the edited ${file}. ${String(e.stderr || e.message).slice(0, 300)}`);
+  }
+  assertSameVersions(lockBefore, readFileSync(path.join(dir, lockFile), "utf8"), labels);
+  const changed = await assertChangedFiles(dir, [file, lockFile], [file]);
+  const prUrl = await publishPrune(repo, dir, {
+    file,
+    staged: changed,
+    validation: `the edited ${file} retains exactly the expected entries, uv lock --no-build and uv lock --check accept it, every locked package version is unchanged, and no file besides ${changed.join(" and ")} changed.`,
+  }, labels, settings);
+  return { repo, pruned: labels, prUrl };
+}
+
+/**
+ * Require the working tree to differ only in `allowed`, and in every file of `required`.
+ *
+ * Ask git for bare paths rather than parsing porcelain by column offset. The status line is
+ * "XY path", so the path begins at column 3, but git() trims its output and the leading space of
+ * an unstaged change goes with it, which silently ate the first character of every path and made
+ * this guard reject a correct edit as "unexpected changes beyond ...: npm-workspace.yaml".
+ */
+async function assertChangedFiles(dir: string, allowed: string[], required: string[]): Promise<string[]> {
+  const tracked = await git(dir, "diff", "--name-only", "HEAD");
+  const untracked = await git(dir, "ls-files", "--others", "--exclude-standard");
+  const changed = [...tracked.split("\n"), ...untracked.split("\n")]
+    .map((l) => l.trim())
+    .filter(Boolean);
+  const unexpected = changed.filter((f) => !allowed.includes(f));
+  if (unexpected.length) {
+    throw new Error(
+      `refusing to push: unexpected changes beyond ${allowed.join(", ")}: ${unexpected.join(", ")}`,
+    );
+  }
+  const missing = required.filter((f) => !changed.includes(f));
+  if (missing.length) throw new Error(`refusing to push: the edit left ${missing.join(", ")} unchanged`);
+  return changed.sort();
 }
 
 export class PrunePushRejected extends Error {}
@@ -248,7 +317,11 @@ export type PruneRunner = (command: string, args: string[], cwd: string) => Prom
 const publishCommand: PruneRunner = async (command, args, cwd) =>
   (await run(command, args, { cwd, timeout: 180_000, maxBuffer: 8 * 1024 * 1024 })).stdout.trim();
 
-export async function publishPrune(repo: string, dir: string, file: string, matured: string[], settings: Settings, execute: PruneRunner = publishCommand): Promise<string> {
+/** What a prune changed and how it was checked, as the commit and the PR should describe it. */
+export type PruneChange = { file: string; staged: string[]; validation: string };
+
+export async function publishPrune(repo: string, dir: string, change: PruneChange, matured: string[], settings: Settings, execute: PruneRunner = publishCommand): Promise<string> {
+  const { file } = change;
   const branch = `watchdog/prune-${createHash("sha256").update(JSON.stringify([file, [...matured].sort()])).digest("hex").slice(0, 12)}`;
   const existing = JSON.parse(await execute("gh", ["pr", "list", "--repo", repo, "--head", branch, "--state", "open", "--json", "url"], dir)) as { url: string }[];
   if (existing[0]) return existing[0].url;
@@ -256,17 +329,20 @@ export async function publishPrune(repo: string, dir: string, file: string, matu
   await execute("git", ["switch", "-c", branch], dir);
   await execute("git", ["config", "user.name", settings.commitName ?? ""], dir);
   await execute("git", ["config", "user.email", settings.commitEmail ?? ""], dir);
-  await execute("git", ["add", file], dir);
+  await execute("git", ["add", ...change.staged], dir);
   const stat = await execute("git", ["diff", "--cached", "--stat"], dir);
   console.log(stat);
   const staged = await execute("git", ["diff", "--cached", "--name-only"], dir);
-  if (staged.trim() !== file) throw new Error(`refusing to commit unexpected staged files: ${staged}`);
+  const expected = [...change.staged].sort().join("\n");
+  if (staged.split("\n").map((l) => l.trim()).filter(Boolean).sort().join("\n") !== expected) {
+    throw new Error(`refusing to commit unexpected staged files: ${staged}`);
+  }
   const title = "chore(deps): prune matured release-age exclusions";
   const noun = matured.length === 1 ? "exemption" : "exemptions";
   const body = wrapBody(
     `Removes ${matured.length} release-age ${noun} from ${file} after the configured cooldown expired.\n\n` +
       matured.map((m) => `- ${m}`).join("\n") +
-      "\n\nValidation: the edited YAML retains exactly the expected exclusions, and pnpm install --lockfile-only --ignore-scripts accepts it without changing other files.",
+      `\n\nValidation: ${change.validation}`,
   );
   await execute("git", ["commit", "-q", "-m", title, "-m", body], dir);
   try { await execute("git", ["push", "-u", "origin", branch], dir); }
