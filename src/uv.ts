@@ -263,8 +263,9 @@ export type SandboxPaths = {
   work: string;
   /** Fresh uv cache for this run, so nothing a run writes there is read by the next. */
   cache: string;
-  /** Resolved uv executable and Python interpreter, mounted read-only. */
+  /** Resolved uv executable, mounted read-only. */
   uv: string;
+  /** Resolved interpreter, visible through the read-only root; see assertVisible. */
   python: string;
   /** Directories to hide behind an empty tmpfs: every home, the temp dirs, user runtime sockets. */
   hidden: string[];
@@ -287,8 +288,6 @@ export function sandboxArgs(p: SandboxPaths, uvArgs: string[]): string[] {
   // Mount points are created inside the tmpfs over /tmp, because the root is read-only.
   args.push("--bind", p.work, "/tmp/work", "--bind", p.cache, "/tmp/cache");
   args.push("--ro-bind", p.uv, "/tmp/bin/uv");
-  const prefix = path.dirname(path.dirname(p.python));
-  if (!/^\/usr\//.test(`${prefix}/`)) args.push("--ro-bind", prefix, prefix);
   args.push("--clearenv", "--setenv", "PATH", "/usr/bin:/bin", "--setenv", "HOME", "/tmp/work");
   args.push("--setenv", "UV_CACHE_DIR", "/tmp/cache", "--chdir", "/tmp/work");
   args.push("/tmp/bin/uv", ...uvArgs, "--no-build", "--python", p.python);
@@ -307,4 +306,21 @@ export function homesRoot(home: string, readable: (dir: string) => boolean): str
     dir = path.dirname(dir);
   }
   return dir;
+}
+
+/**
+ * Refuse an interpreter the sandbox would have to mount back in.
+ *
+ * Mounting an interpreter's directory over the empty homes would re-expose whatever else lives
+ * there, a whole home directory for a `~/bin/python`. So the interpreter must already be visible:
+ * outside every hidden directory.
+ */
+export function assertVisible(python: string, hidden: string[]): void {
+  const inside = hidden.find((dir) => python === dir || python.startsWith(`${dir}/`));
+  if (inside) {
+    throw new Error(
+      `refusing to run uv: the interpreter ${python} is under ${inside}, which the sandbox hides. ` +
+        "Install a system Python in /usr/bin or /usr/local/bin",
+    );
+  }
 }

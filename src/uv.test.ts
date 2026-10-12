@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 
 import {
   assertSameVersions, assertUvOutcome, isUvSettingsFile, lockedVersions, maturedUvEntries, parseSpan, parseUvExclusions,
-  removeUvEntries, expectedLockAfterPrune, homesRoot, sandboxArgs, uvCooldownMs,
+  removeUvEntries, assertVisible, expectedLockAfterPrune, homesRoot, sandboxArgs, uvCooldownMs,
 } from "./uv.ts";
 
 const DAY = 86_400_000;
@@ -280,11 +280,10 @@ describe("sandboxArgs", () => {
     assert.deepEqual(args.slice(-5), ["/tmp/bin/uv", "lock", "--no-build", "--python", "/usr/bin/python3.13"]);
   });
 
-  test("mounts an interpreter outside /usr read-only at its own path", () => {
+  test("mounts nothing back over the hidden directories but the copy, the cache and uv", () => {
     const out = sandboxArgs({ ...paths, python: "/opt/py/bin/python3" }, ["lock"]);
-    const i = out.lastIndexOf("--ro-bind");
-    assert.deepEqual(out.slice(i, i + 3), ["--ro-bind", "/opt/py", "/opt/py"]);
-    assert.ok(!sandboxArgs(paths, ["lock"]).includes("/usr"), "nothing under /usr is mounted again");
+    assert.deepEqual(pairs("--ro-bind"), ["/", paths.uv]);
+    assert.ok(!out.includes("/opt/py"), "the interpreter is reached through the read-only root");
   });
 });
 
@@ -300,5 +299,22 @@ describe("homesRoot", () => {
 
   test("never returns the root", () => {
     assert.equal(homesRoot("/a/b/alice", () => false), "/a");
+  });
+});
+
+describe("assertVisible", () => {
+  const hidden = ["/home", "/srv/homes", "/tmp"];
+
+  test("accepts a system interpreter", () => {
+    assert.doesNotThrow(() => assertVisible("/usr/bin/python3.13", hidden));
+  });
+
+  test("refuses one under a hidden directory instead of mounting it back", () => {
+    assert.throws(() => assertVisible("/home/alice/bin/python", hidden), /under \/home, which the sandbox hides/);
+    assert.throws(() => assertVisible("/srv/homes/live/alice/.local/python3", hidden), /under \/srv\/homes/);
+  });
+
+  test("does not mistake a sibling with a shared prefix for a hidden directory", () => {
+    assert.doesNotThrow(() => assertVisible("/homes-shared/python3", hidden));
   });
 });

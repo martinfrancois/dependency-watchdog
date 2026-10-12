@@ -277,7 +277,10 @@ executes the project environment's interpreter to read its version, follows `.py
 executable, and builds the root project to read dynamic metadata. So uv runs inside bubblewrap
 (`bwrap`), with every home directory, `/tmp`, `/var/tmp` and `/run/user` replaced by empty
 directories, the environment cleared, and nothing writable but the copy and a throwaway cache. The
-network stays, because uv needs the package index. Without `bwrap` the uv prune refuses to run.
+network stays, because uv needs the package index. Without `bwrap` the uv prune refuses to run. uv
+locks with a system Python (`uv python find --system` on a system `PATH`); an interpreter under one
+of the hidden directories is refused rather than mounted back in, since that would re-expose what
+the sandbox hides.
 Projects whose metadata needs more than these two files, such as dynamic metadata, uv workspaces or
 local sources, fail validation and have to be pruned by hand. The pnpm side passes
 `--ignore-scripts` for the same reason.
