@@ -15,7 +15,7 @@ import type { Settings } from "./types.ts";
 import { parseExclusions, publishedAt } from "./checks.ts";
 import {
   assertSameVersions, assertUvOutcome, describeUvEntry, expectedLockAfterPrune, isUvSettingsFile, maturedUvEntries, parseUvExclusions,
-  homesRoot, removeUvEntries, sandboxArgs, uvCooldownMs,
+  assertVisible, homesRoot, removeUvEntries, sandboxArgs, uvCooldownMs,
 } from "./uv.ts";
 
 const run = promisify(execFile);
@@ -324,11 +324,16 @@ async function relockInSandbox(pyproject: string, lock: string, uvCommand: strin
     mkdirSync(cache);
     writeFileSync(path.join(work, "pyproject.toml"), pyproject);
     writeFileSync(path.join(work, "uv.lock"), lock);
-    // Found from an empty directory, so no project file can steer the choice.
-    const found = (await run(uv, ["python", "find", "--no-project", "--system"], { cwd: work })).stdout.trim();
     const hidden = [...new Set(["/home", homesRoot(realpathSync(homedir()), (d) => { try { accessSync(d, constants.R_OK); return true; } catch { return false; } }), "/root", "/tmp", "/var/tmp", "/run/user"])]
       .filter((d) => existsSync(d));
-    const paths = { work, cache, uv, python: realpathSync(found), hidden };
+    // A system interpreter only, found with a system PATH and no project files, so neither the
+    // operator's shell setup nor the repository steers the choice.
+    const found = (await run(uv, ["python", "find", "--no-project", "--system"], {
+      cwd: work, env: { PATH: "/usr/local/bin:/usr/bin:/bin", HOME: process.env.HOME ?? "" },
+    })).stdout.trim();
+    const python = realpathSync(found);
+    assertVisible(python, hidden);
+    const paths = { work, cache, uv, python, hidden };
     for (const args of [["lock"], ["lock", "--check"]]) {
       await run(bwrap, sandboxArgs(paths, args), { maxBuffer: 8 * 1024 * 1024 }).catch((error: { stderr?: string; message?: string }) => {
         throw new Error(`refusing to push: uv rejected the edited ${file}. ${String(error.stderr || error.message).slice(0, 300)}`);
