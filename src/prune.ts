@@ -217,17 +217,12 @@ async function prunePnpm(repo: string, dir: string, file: string, text: string, 
   // text" and "git push" used to look at the result, which is how a regex bug became two dead
   // main branches. pnpm is the authority on this file, so ask pnpm.
   writeFileSync(full, next);
-  const check = await run("pnpm", ["install", "--lockfile-only", "--ignore-scripts"], {
-    cwd: path.dirname(full),
-    env: { ...process.env, CI: "1" },
-  }).catch((e: { stderr?: string; message?: string }) => ({
-    failed: true as const,
-    message: e.stderr || e.message || "unknown error",
-  }));
-  if ("failed" in check && check.failed) {
+  try {
+    await validatePnpm(path.dirname(full));
+  } catch (error) {
     writeFileSync(full, text);
     throw new Error(
-      `refusing to push: pnpm rejected the edited ${file}. ${String(check.message).slice(0, 300)}`,
+      `refusing to push: pnpm rejected the edited ${file}. ${(error as Error).message.slice(0, 300)}`,
     );
   }
   // Only the workspace file should change; a lockfile touched here would mean the edit altered
@@ -239,6 +234,23 @@ async function prunePnpm(repo: string, dir: string, file: string, text: string, 
     validation: "the edited YAML retains exactly the expected exclusions, and pnpm install --lockfile-only --ignore-scripts accepts it without changing other files.",
   }, matured, settings);
   return { repo, pruned: matured, prUrl };
+}
+
+type PnpmRunner = (command: string, args: string[], options: { cwd: string; env: NodeJS.ProcessEnv }) => Promise<unknown>;
+
+/** Global pnpm settings can point at a store outside the service's writable paths. */
+export async function validatePnpm(cwd: string, execute: PnpmRunner = run): Promise<void> {
+  const store = mkdtempSync(path.join(tmpdir(), "prune-pnpm-"));
+  try {
+    await execute("pnpm", ["install", "--lockfile-only", "--ignore-scripts", "--store-dir", store], {
+      cwd, env: { ...process.env, CI: "1" },
+    });
+  } catch (error) {
+    const e = error as { stderr?: string; stdout?: string; message?: string };
+    throw new Error(e.stderr || e.stdout || e.message || "unknown error");
+  } finally {
+    rmSync(store, { recursive: true, force: true });
+  }
 }
 
 /**
