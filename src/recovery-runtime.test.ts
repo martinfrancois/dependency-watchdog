@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, readdirSync, rmSync, realpathSync } from "node:fs";
+import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, readdirSync, rmSync, realpathSync, symlinkSync } from "node:fs";
 import path from "node:path";
 import { DEFAULTS } from "./config.ts";
 import { enqueue, incidents, readIncident, saveIncident, rememberRecoverySettings, rememberedRecoverySettings, resolveExecutable, recoveryDirectory, retryIncident, writePrivate } from "./recovery-store.ts";
@@ -72,12 +72,61 @@ test("verification checks PR destination, state, CI, and fresh deployed scans", 
   await assert.rejects(verifyResult(incident, fixed, settings, async (_c, args) => args[0] === "rev-parse" ? "abc" : "dirty"), /uncommitted/);
   const scan = async (c: string, args: string[]) => {
     if (c === "git") return args[0] === "rev-parse" ? "abc" : "";
-    if (c === "systemctl") return "/opt/watchdog/src/cli-watchdog.ts";
+    if (c === "busctl") return args.includes("GetUnit") ? '{"data":["/unit/watchdog"]}'
+      : '{"data":[["/usr/bin/env",["/usr/bin/env","node","/opt/watchdog/src/cli-watchdog.ts"]]]}';
     if (c === "gh") return args.includes("user") ? '{"login":"o"}' : args[0] === "api" ? '{"owner":{"login":"o"}}' : '{"state":"MERGED","isCrossRepository":false,"mergeCommit":{"oid":"abc"}}';
     return '{"complete":true,"findings":[]}';
   };
-  await verifyResult(incident, fixed, settings, scan);
+  await verifyResult(incident, fixed, settings, scan, (file) => file);
   await assert.rejects(verifyResult(incident, { ...result, outcome: "resolved", verification: ["scan"] }, settings, async () => '{"complete":false,"findings":[]}'), /Independent/);
+});
+
+test("deployment verification accepts a service path through a symlink to the checkout", async () => {
+  const dir = mkdtempSync("/var/tmp/watchdog-deployment-test-");
+  try {
+    const checkout = path.join(dir, "checkout with spaces");
+    const alias = path.join(dir, "alias");
+    mkdirSync(path.join(checkout, "src"), { recursive: true });
+    writeFileSync(path.join(checkout, "src/cli-watchdog.ts"), "");
+    symlinkSync(checkout, alias);
+    const settings = { ...DEFAULTS.recovery, watchdogRepo: "o/watchdog", watchdogCheckout: checkout, allowWatchdogMerge: true };
+    const fixed: RecoveryResult = { ...result, category: "watchdog", outcome: "fixed", prUrls: ["https://github.com/o/watchdog/pull/2"], deployedRevision: "abc", verification: ["scan"] };
+    let scanned = false;
+    let argv = ["/usr/bin/env", "node", path.join(alias, "src/cli-watchdog.ts")];
+    let extraCommands: unknown[] = [];
+    const run = async (cmd: string, args: string[]) => {
+      if (cmd === "git") return args[0] === "rev-parse" ? "abc" : "";
+      if (cmd === "busctl") return args.includes("GetUnit")
+        ? JSON.stringify({ type: "o", data: ["/unit/watchdog"] })
+        : JSON.stringify({ type: "a(sasbttttuii)", data: [["/usr/bin/env", argv, false, 0, 0, 0, 0, 0, 0, 0], ...extraCommands] });
+      if (cmd === "gh") return args.includes("user") ? '{"login":"o"}' : args[0] === "api" ? '{"owner":{"login":"o"}}' : '{"state":"MERGED","isCrossRepository":false,"mergeCommit":{"oid":"abc"}}';
+      assert.equal(cmd, process.execPath);
+      assert.deepEqual(args, [path.join(checkout, "src/cli-watchdog.ts"), "--json"]);
+      scanned = true;
+      return '{"complete":true,"findings":[]}';
+    };
+    await verifyResult(makeIncident(finding), fixed, settings, run);
+    assert.ok(scanned, "accepting the service path still requires a fresh scan");
+    const other = path.join(dir, "other", "src/cli-watchdog.ts");
+    mkdirSync(path.dirname(other), { recursive: true });
+    writeFileSync(other, "");
+    for (const invalid of [
+      ["/usr/bin/env", "node", other],
+      ["/usr/bin/env", "node", other, path.join(alias, "src/cli-watchdog.ts")],
+      ["/usr/bin/env", "echo", path.join(alias, "src/cli-watchdog.ts")],
+    ]) {
+      scanned = false;
+      argv = invalid;
+      await assert.rejects(verifyResult(makeIncident(finding), fixed, settings, run), /does not run the claimed checkout/);
+      assert.equal(scanned, false);
+    }
+    argv = ["/usr/bin/env", "node", path.join(alias, "src/cli-watchdog.ts")];
+    extraCommands = [["/usr/bin/true", ["/usr/bin/true"]]];
+    await assert.rejects(verifyResult(makeIncident(finding), fixed, settings, run), /does not run the claimed checkout/);
+    extraCommands = [];
+    rmSync(path.join(checkout, "src/cli-watchdog.ts"));
+    await assert.rejects(verifyResult(makeIncident(finding), fixed, settings, run), /ENOENT/);
+  } finally { rmSync(dir, { recursive: true, force: true }); }
 });
 
 test("worker serializes jobs and recovers an interrupted investigation", async () => {
@@ -131,16 +180,17 @@ test("contributors must deploy locally and submit a fork PR; owners must deploy 
   const pr = { state: "OPEN", headRepositoryOwner: { login: "contributor" }, isCrossRepository: true, headRefOid: "abc", statusCheckRollup: [] };
   const runner = (patch = {}, start = "/opt/watchdog/src/cli-watchdog.ts") => async (c: string, args: string[]) => {
     if (c === "git") return args[0] === "rev-parse" ? "abc" : "";
-    if (c === "systemctl") return start;
+    if (c === "busctl") return args.includes("GetUnit") ? '{"data":["/unit/watchdog"]}'
+      : JSON.stringify({ data: [["/usr/bin/env", ["/usr/bin/env", "node", start]]] });
     if (c === "gh") return args.includes("user") ? '{"login":"contributor"}' : args[0] === "api" ? '{"owner":{"login":"o"}}' : JSON.stringify({ ...pr, ...patch });
     return '{"complete":true,"findings":[]}';
   };
-  await verifyResult(incident, repair, settings, runner());
-  await assert.rejects(verifyResult(incident, repair, settings, runner({ headRefOid: "older-commit" })), /exact locally verified/);
-  await assert.rejects(verifyResult(incident, repair, settings, runner({ isCrossRepository: false })), /fork/);
-  await assert.rejects(verifyResult(incident, repair, settings, runner({}, "/other/checkout")), /Installed/);
-  await assert.rejects(verifyResult(incident, { ...repair, outcome: "fixed" }, settings, runner()), /Only the authorized/);
-  await assert.rejects(verifyResult(incident, { ...repair, deployedRevision: null }, settings, runner()), /deployment evidence/);
+  await verifyResult(incident, repair, settings, runner(), (file) => file);
+  await assert.rejects(verifyResult(incident, repair, settings, runner({ headRefOid: "older-commit" }), (file) => file), /exact locally verified/);
+  await assert.rejects(verifyResult(incident, repair, settings, runner({ isCrossRepository: false }), (file) => file), /fork/);
+  await assert.rejects(verifyResult(incident, repair, settings, runner({}, "/other/checkout"), (file) => file), /Installed/);
+  await assert.rejects(verifyResult(incident, { ...repair, outcome: "fixed" }, settings, runner(), (file) => file), /Only the authorized/);
+  await assert.rejects(verifyResult(incident, { ...repair, deployedRevision: null }, settings, runner(), (file) => file), /deployment evidence/);
 });
 
 
