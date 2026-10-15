@@ -231,7 +231,7 @@ async function prunePnpm(repo: string, dir: string, file: string, text: string, 
   const prUrl = await publishPrune(repo, dir, {
     file,
     staged: [file],
-    validation: "the edited YAML retains exactly the expected exclusions, and pnpm install --lockfile-only --ignore-scripts accepts it without changing other files.",
+    validation: "the edited YAML retains exactly the expected exclusions, and pnpm install --lockfile-only --ignore-scripts --ignore-pnpmfile accepts it without changing other files.",
   }, matured, settings);
   return { repo, pruned: matured, prUrl };
 }
@@ -242,7 +242,7 @@ type PnpmRunner = (command: string, args: string[], options: { cwd: string; env:
 export async function validatePnpm(cwd: string, execute: PnpmRunner = run): Promise<void> {
   const store = mkdtempSync(path.join(tmpdir(), "prune-pnpm-"));
   try {
-    await execute("pnpm", ["install", "--lockfile-only", "--ignore-scripts", "--store-dir", store], {
+    await execute("pnpm", ["install", "--lockfile-only", "--ignore-scripts", "--store-dir", store, "--ignore-pnpmfile"], {
       cwd, env: { ...process.env, CI: "1" },
     });
   } catch (error) {
