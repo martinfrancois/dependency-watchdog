@@ -40,6 +40,9 @@ jobs:
         run: pnpm run typecheck
 
       - name: Test with coverage thresholds
+        env:
+          # The system manager sets up the sandbox, then runs its fixture as the runner user.
+          DEP_WATCHDOG_TEST_SYSTEMD_SYSTEM: "1"
         # Fails below 80% lines, branches or functions. The thresholds are enforced by node itself
         # rather than a reporter, so there is no separate tool to keep in step.
         run: pnpm test
