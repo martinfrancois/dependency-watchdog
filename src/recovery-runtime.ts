@@ -1,5 +1,5 @@
 import { execFile, spawn } from "node:child_process";
-import { createWriteStream, existsSync, mkdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { createWriteStream, existsSync, mkdirSync, readFileSync, realpathSync, rmSync, statSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { promisify } from "node:util";
 import { ConfigDirUnset, loadSettings, loadSecrets } from "./config.ts";
@@ -76,15 +76,26 @@ export async function executeCodex(incident: Incident, settings: RecoverySetting
 }
 type PullRequest = { state: string; statusCheckRollup: { conclusion?: string; state?: string }[];
   isCrossRepository: boolean; headRepositoryOwner: { login: string }; headRefOid: string; mergeCommit: { oid: string } | null };
-export async function verifyResult(incident: Incident, result: RecoveryResult, settings: RecoverySettings, run = command): Promise<void> {
+export async function verifyResult(incident: Incident, result: RecoveryResult, settings: RecoverySettings, run = command, resolvePath: (file: string) => string = realpathSync): Promise<void> {
   const watchdogRepair = result.category === "watchdog" && ["fixed", "review"].includes(result.outcome);
   if (watchdogRepair) {
     if (!result.deployedRevision || !result.verification.length) throw new Error("Watchdog repair lacks local deployment evidence");
     const sha = await run("git", ["rev-parse", "HEAD"], settings.watchdogCheckout);
     if (sha !== result.deployedRevision) throw new Error("Claimed deployment revision differs from the running checkout");
     if (await run("git", ["status", "--porcelain"], settings.watchdogCheckout)) throw new Error("Deployed checkout contains uncommitted changes");
-    const start = await run("systemctl", ["--user", "show", "dep-watchdog.service", "--property=ExecStart", "--value"]);
-    if (!start.includes(path.join(settings.watchdogCheckout, "src/cli-watchdog.ts"))) throw new Error("Installed watchdog service does not run the claimed checkout");
+    // The human-readable ExecStart string loses argument boundaries. Read the installed
+    // template's argv through D-Bus so spaces and symlinked parent directories remain valid.
+    const bus = ["--user", "--json=short"];
+    const unit = JSON.parse(await run("busctl", [...bus, "call", "org.freedesktop.systemd1", "/org/freedesktop/systemd1",
+      "org.freedesktop.systemd1.Manager", "GetUnit", "s", "dep-watchdog.service"])) as { data: [string] };
+    const start = JSON.parse(await run("busctl", [...bus, "get-property", "org.freedesktop.systemd1", unit.data[0],
+      "org.freedesktop.systemd1.Service", "ExecStart"])) as { data: [string, string[], ...unknown[]][] };
+    const entry = start.data.length === 1 ? start.data[0] : undefined;
+    const argv = entry?.[1];
+    const script = entry?.[0] === "/usr/bin/env" && argv?.length === 3 && argv[0] === "/usr/bin/env" && argv[1] === "node" ? argv[2] : undefined;
+    if (!script || resolvePath(script) !== resolvePath(path.join(settings.watchdogCheckout, "src/cli-watchdog.ts"))) {
+      throw new Error("Installed watchdog service does not run the claimed checkout");
+    }
   }
   if (["fixed", "review"].includes(result.outcome)) {
     let account = "", owner = "";
