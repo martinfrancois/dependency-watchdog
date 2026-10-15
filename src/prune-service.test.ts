@@ -12,6 +12,7 @@ test("the prune service keeps pnpm's shared runtime locks writable and persisten
   assert.match(unit, /^RuntimeDirectoryPreserve=yes$/m);
   assert.match(unit, /^ProtectSystem=strict$/m);
   assert.match(unit, /^ProtectHome=read-only$/m);
+  assert.match(unit, /^PrivateUsers=true$/m);
 });
 
 test("pnpm validates a workspace inside the prune service's filesystem sandbox", (t) => {
@@ -22,7 +23,7 @@ test("pnpm validates a workspace inside the prune service's filesystem sandbox",
   }
   // The empty fixture uses a private store, so it needs none of the installation's home paths.
   const properties = unit.split("\n").filter((line) =>
-    /^(PrivateTmp|ProtectSystem|ProtectHome|RuntimeDirectory|RuntimeDirectoryMode|RuntimeDirectoryPreserve|NoNewPrivileges|RestrictSUIDSGID)=/.test(line));
+    /^(PrivateTmp|PrivateUsers|ProtectSystem|ProtectHome|RuntimeDirectory|RuntimeDirectoryMode|RuntimeDirectoryPreserve|NoNewPrivileges|RestrictSUIDSGID)=/.test(line));
   // systemd-run passes property values literally; unit files expand these specifiers.
   const expand = (value: string) => value.replaceAll("%h", homedir())
     .replaceAll("%U", String(process.getuid!())).replaceAll("%t", process.env.XDG_RUNTIME_DIR!);
