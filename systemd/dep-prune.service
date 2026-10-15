@@ -26,6 +26,11 @@ PrivateTmp=true
 ProtectSystem=strict
 ProtectHome=read-only
 ReadWritePaths=%h/.local/share/pnpm %h/.cache %h/.local/state/dep-watchdog
+# pnpm 12 locks its stores under XDG_RUNTIME_DIR, outside the store itself.
+# Keep the shared lock files across runs so another pnpm process keeps the same locks.
+RuntimeDirectory=pnpm-store-operation-locks-%U
+RuntimeDirectoryMode=0700
+RuntimeDirectoryPreserve=yes
 NoNewPrivileges=true
 RestrictSUIDSGID=true
 
