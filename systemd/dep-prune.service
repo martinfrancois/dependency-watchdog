@@ -23,8 +23,6 @@ TimeoutStartSec=30min
 # Looser than the watchdog because this one clones repositories and runs pnpm or uv, which need a
 # writable store and cache. It still cannot write anywhere in the home directory except those.
 PrivateTmp=true
-# Older systemd user managers need an explicit user namespace for filesystem protection.
-PrivateUsers=true
 ProtectSystem=strict
 ProtectHome=read-only
 ReadWritePaths=%h/.local/share/pnpm %h/.cache %h/.local/state/dep-watchdog
