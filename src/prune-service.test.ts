@@ -39,7 +39,7 @@ test("pnpm validates a workspace inside the prune service's filesystem sandbox",
       assert.throws(() => writeFileSync(probe, ''), { code: 'EROFS' });
       writeFileSync(dir + '/package.json', JSON.stringify({ name: 'fixture', private: true }));
       writeFileSync(dir + '/pnpm-workspace.yaml', 'packages:\\n  - .\\n');
-      execFileSync('pnpm', ['install', '--lockfile-only', '--ignore-scripts', '--offline',
+      execFileSync('pnpm', ['install', '--lockfile-only', '--ignore-scripts', '--ignore-pnpmfile', '--offline',
         '--store-dir', dir + '/store'], { cwd: dir, stdio: 'inherit' });
     } finally {
       rmSync(dir, { recursive: true, force: true });
