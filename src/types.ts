@@ -40,6 +40,7 @@ export type Settings = {
   thresholds: Thresholds;
   securityLabels: string[];
   checks: Checks;
+  notificationOwners: string[];
 };
 
 export type Secrets = {
