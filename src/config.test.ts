@@ -87,6 +87,19 @@ describe("loadSettings", () => {
     assert.throws(() => m.loadSettings(), /not "owner\/name": bare/);
   });
 
+  test("defaults the notification owners to none, meaning the reader's account", () => {
+    assert.deepEqual(loadWith({ "config.json": JSON.stringify({ repos: ["o/r"] }) }).loadSettings().notificationOwners, []);
+    const listed = loadWith({ "config.json": JSON.stringify({ repos: ["o/r"], notificationOwners: ["me", "my-org"] }) });
+    assert.deepEqual(listed.loadSettings().notificationOwners, ["me", "my-org"]);
+  });
+
+  test("rejects notification owners that are not account names", () => {
+    for (const notificationOwners of ["me", ["me/repo"], [""], [42]]) {
+      const m = loadWith({ "config.json": JSON.stringify({ repos: ["o/r"], notificationOwners }) });
+      assert.throws(() => m.loadSettings(), /notificationOwners/);
+    }
+  });
+
   test("reports the position of malformed JSON", () => {
     const m = loadWith({ "config.json": '{"repos":[' });
     assert.throws(() => m.loadSettings(), /is not valid JSON/);

@@ -39,6 +39,11 @@
   "securityLabels": [
     "security"
   ],
+  "$comment_notifications": [
+    "Accounts whose repositories the notification sweep clears threads in. Empty means the account",
+    "gh is logged in as. Add an organisation you own to include its repositories."
+  ],
+  "notificationOwners": [],
   "$comment_checks": [
     "Every check is on by default. A missing lockfile skips the maintenance check.",
     "Strict merge rules do not skip default-branch inspection."

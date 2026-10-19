@@ -374,22 +374,29 @@ or merges, and Renovate's `reviewers` setting adds a review request on top. Watc
 event type (issues, pull requests, releases), never by author, so you cannot mute Renovate there
 without also muting pull requests from people.
 
-The sweep runs every minute and marks these threads done:
+The sweep runs every minute. It only touches repositories owned by the accounts in
+`notificationOwners` in `config.json`, or by the account `gh` is logged in as when that list is
+empty. Every thread in any other repository stays, Renovate's included. In the owners' repositories
+it marks these threads done:
 
 - pull requests opened by `renovate[bot]`
-- releases a bot published for the merge of a Renovate pull request
-- in repositories you administer, release-please pull requests, which every merge updates, and
-  releases a bot published for the merge of a release-please pull request or of one you opened
+- release-please pull requests, which every merge updates
+- releases a bot published for the merge of a Renovate or release-please pull request, or of one
+  you opened
+- closed pull requests you opened, unless another person commented on or reviewed one after it
+  closed. Agents working as you open most of these, and their merges and the review bots that
+  comment afterwards would otherwise fill the inbox. Your own pull requests look the same to
+  GitHub, so they are cleared too once closed. Open ones stay.
 
-A release a person published stays, and so does anything else in a repository you do not
-administer, such as an upstream release that ships your fix.
+A release a person published stays.
 
 The sweep looks at read threads too, because opening a pull request or its email marks the thread
 read but leaves it in the inbox. A thread where someone mentions you stays, and keeps staying for 90
 days even after a later rebase changes the reason GitHub reports for it. Bots write your handle into
-changelogs and release notes, which GitHub also reports as a mention, so on a release-please pull
-request only a mention in a person's comment or review counts, and on a bot's release none does.
-Done threads come back if something new happens on them, and the next run clears them again.
+changelogs and release notes, which GitHub also reports as a mention, and review bots do the same on
+your pull requests, so on a release-please pull request or one of your closed pull requests only
+another person's mention in a comment or review counts, and on a bot's release none does. Done
+threads come back if something new happens on them, and the next run clears them again.
 
 Each run first asks GitHub whether the inbox changed, using `If-Modified-Since` with the previous
 response's `Last-Modified`. GitHub answers `304 Not Modified` when it did not, and a 304 does not

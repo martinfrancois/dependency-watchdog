@@ -86,6 +86,11 @@ export const DEFAULTS: Settings = {
   /** Labels Renovate puts on security pull requests. Any match counts. */
   securityLabels: ["security"],
   /**
+   * Accounts whose repositories the notification sweep clears threads in. Empty means the
+   * authenticated account only. Threads in every other repository are left alone.
+   */
+  notificationOwners: [],
+  /**
    * Which checks to run.
    *
    * Disabled checks appear explicitly in the diagnostic report.
@@ -140,6 +145,10 @@ export function loadSettings(): Settings {
     throw new Error(
       `${file}: these are not "owner/name": ${malformed.join(", ")}`,
     );
+  }
+  if (!Array.isArray(settings.notificationOwners)
+    || settings.notificationOwners.some((o) => typeof o !== "string" || !/^[A-Za-z0-9-]+$/.test(o))) {
+    throw new Error(`${file}: "notificationOwners" must list GitHub account names`);
   }
   if (typeof settings.recovery.enabled !== "boolean" || typeof settings.recovery.allowWatchdogMerge !== "boolean") {
     throw new Error("Recovery enabled and allowWatchdogMerge must be booleans");
