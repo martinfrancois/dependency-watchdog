@@ -374,18 +374,28 @@ or merges, and Renovate's `reviewers` setting adds a review request on top. Watc
 event type (issues, pull requests, releases), never by author, so you cannot mute Renovate there
 without also muting pull requests from people.
 
-The sweep runs every minute and marks a thread done when its pull request was opened by
-`renovate[bot]`, and when a release was published by merging such a pull request. It looks at read
-threads too, because opening a pull request or its email marks the thread read but leaves it in the
-inbox. A thread where someone mentions you stays, and keeps staying for 90 days even after a later
-rebase changes the reason GitHub reports for it. Done threads come back if something new happens on
-them, and the next run clears them again.
+The sweep runs every minute and marks these threads done:
+
+- pull requests opened by `renovate[bot]`
+- releases a bot published for the merge of a Renovate pull request
+- in repositories you administer, release-please pull requests, which every merge updates, and
+  releases a bot published for the merge of a release-please pull request or of one you opened
+
+A release a person published stays, and so does anything else in a repository you do not
+administer, such as an upstream release that ships your fix.
+
+The sweep looks at read threads too, because opening a pull request or its email marks the thread
+read but leaves it in the inbox. A thread where someone mentions you stays, and keeps staying for 90
+days even after a later rebase changes the reason GitHub reports for it. Bots write your handle into
+changelogs and release notes, which GitHub also reports as a mention, so on a release-please pull
+request only a mention in a person's comment or review counts, and on a bot's release none does.
+Done threads come back if something new happens on them, and the next run clears them again.
 
 Each run first asks GitHub whether the inbox changed, using `If-Modified-Since` with the previous
 response's `Last-Modified`. GitHub answers `304 Not Modified` when it did not, and a 304 does not
 count against the API rate limit. A changed inbox costs a listing of the threads updated since the
-previous listing, plus one lookup per thread not decided before (three for a release). The sweep
-also honours `X-Poll-Interval`, which was 60 seconds when this was written.
+previous listing, plus a few lookups for each thread not decided before. The sweep also honours
+`X-Poll-Interval`, which was 60 seconds when this was written.
 
 A lookup that fails, for example in a repository the `gh` token cannot read, is logged and the run
 carries on with the other threads, then exits non-zero so `systemctl --user status` shows it.

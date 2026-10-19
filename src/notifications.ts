@@ -9,13 +9,13 @@ import { defaultRunner, gh, GH_EXEC_OPTIONS, type Runner } from "./github.ts";
  * Clears dependency update threads from the GitHub notification inbox.
  *
  * Renovate opens, rebases and merges pull requests all day, and every one of those lands in the
- * inbox of everyone watching the repository, as does each release a merge publishes. GitHub can
- * only filter watched activity by event type, never by author, so muting it would also mute pull
- * requests from people. Marking the threads done after they arrive is the only way to keep one
- * without the other.
+ * inbox of everyone watching the repository, as does each release-please update and each release a
+ * merge publishes. GitHub can only filter watched activity by event type, never by author, so
+ * muting it would also mute pull requests from people. Marking the threads done after they arrive
+ * is the only way to keep one without the other.
  */
 
-/** Authors whose pull requests, and the releases those pull requests publish, are cleared. */
+/** Dependency bots whose pull requests, and the releases their merges publish, are cleared. */
 const AUTHORS = new Set(["renovate[bot]"]);
 
 /**
@@ -120,28 +120,122 @@ const defaultFetch: Fetch = (endpoint, headers) =>
 /** gh reports HTTP failures as "(HTTP 404)". Matching that, not a bare number, keeps PR #404 out. */
 const isGone = (error: unknown): boolean => /\(HTTP (404|410)\)/.test((error as Error).message);
 
+type Pull = { user?: { login?: string; type?: string }; head?: { ref?: string } };
+type Comment = { user?: { type?: string } | null; body?: string | null };
+
 /**
- * Who opened the pull request behind a thread: the pull request itself, or for a release, the pull
- * request that merged its tagged commit. Null for anything else, or when it no longer exists.
+ * release-please opens its pull requests from branches named release-please--branches--<base>, for
+ * example release-please--branches--main--components--<name>.
  */
-export async function openedBy(thread: Thread, runner: Runner = defaultRunner): Promise<string | null> {
+const isDependencyBot = (pr: Pull): boolean => AUTHORS.has(pr.user?.login ?? "");
+
+const isReleasePleasePr = (pr: Pull): boolean =>
+  pr.user?.type === "Bot" && (pr.head?.ref?.startsWith("release-please--") ?? false);
+
+/**
+ * What automation a thread comes from, or null when it comes from a person:
+ * - "renovate": a pull request Renovate opened, in any repository.
+ * - "release-pr": a release-please pull request, which picks up every merge, Renovate's included.
+ * - "release": a release a bot published for the merge of a Renovate pull request, or, in a
+ *   repository the reader administers, of a release-please pull request or one the reader opened.
+ * The last two are limited to the reader's own repositories because elsewhere they are someone
+ * else's release, such as an upstream release that ships the reader's fix.
+ */
+export type Origin = "renovate" | "release-pr" | "release" | null;
+
+/** Facts about the reader, looked up at most once per run and only when a thread needs them. */
+export type Reader = { login: () => Promise<string>; administers: (repo: string) => Promise<boolean> };
+
+/** A Reader backed by gh. A failed lookup is forgotten, so it does not fail every later thread. */
+export function reader(runner: Runner = defaultRunner): Reader {
+  const once = <T>(lookup: () => Promise<T>) => {
+    let value: Promise<T> | undefined;
+    return () => (value ??= lookup().catch((error: unknown) => { value = undefined; throw error; }));
+  };
+  const login = once(() => gh<{ login: string }>("user", { runner }).then((u) => u.login));
+  const repos = new Map<string, () => Promise<boolean>>();
+  return {
+    login,
+    administers: (repo) => {
+      if (!repos.has(repo)) {
+        repos.set(repo, once(() => gh<{ permissions?: { admin?: boolean } }>(`repos/${repo}`, { runner })
+          .then((r) => r.permissions?.admin === true)));
+      }
+      return repos.get(repo)!();
+    },
+  };
+}
+
+/** Classify a thread. See Origin. A pull request or release that no longer exists is null. */
+export async function originOf(thread: Thread, me: Reader, runner: Runner = defaultRunner): Promise<Origin> {
   const url = thread.subject.url;
   if (url === null) return null;
+  const repo = thread.repository.full_name;
   try {
     if (thread.subject.type === "PullRequest") {
-      return (await gh<{ user?: { login?: string } }>(url, { runner })).user?.login ?? null;
+      const pr = await gh<Pull>(url, { runner });
+      if (isDependencyBot(pr)) return "renovate";
+      return isReleasePleasePr(pr) && await me.administers(repo) ? "release-pr" : null;
     }
     if (thread.subject.type !== "Release") return null;
-    const repo = `repos/${thread.repository.full_name}`;
-    const { tag_name: tag } = await gh<{ tag_name: string }>(url, { runner });
-    const { sha } = await gh<{ sha: string }>(`${repo}/commits/${encodeURIComponent(tag)}`, { runner });
-    const pulls = await gh<{ user?: { login?: string } }[]>(`${repo}/commits/${sha}/pulls`, { runner });
-    const logins = pulls.flatMap((p) => p.user?.login ?? []);
-    return logins.find((login) => AUTHORS.has(login)) ?? logins[0] ?? null;
+    const release = await gh<{ tag_name: string; author?: { type?: string } | null }>(url, { runner });
+    if (release.author?.type !== "Bot") return null;
+    const { sha } = await gh<{ sha: string }>(`repos/${repo}/commits/${encodeURIComponent(release.tag_name)}`, { runner });
+    const pulls = await gh<Pull[]>(`repos/${repo}/commits/${sha}/pulls`, { runner });
+    if (pulls.some(isDependencyBot)) return "release";
+    if (pulls.length === 0 || !await me.administers(repo)) return null;
+    const login = await me.login();
+    return pulls.some((p) => isReleasePleasePr(p) || p.user?.login === login) ? "release" : null;
   } catch (error) {
     if (isGone(error)) return null;
     throw error;
   }
+}
+
+/**
+ * Whether a person, not a bot, mentions the reader or a team on a pull request. release-please
+ * writes the reader's handle into its changelog, and GitHub gives such a thread the reason
+ * "mention" with no comment from anyone, so on those pull requests the reason alone cannot tell a
+ * bot's mention from a person's. A team mention is matched as any @owner/name, which also matches
+ * scoped package names and so errs towards keeping. A pull request deleted meanwhile has none.
+ */
+export async function personMentions(
+  repo: string,
+  pullUrl: string,
+  me: Reader,
+  runner: Runner = defaultRunner,
+): Promise<boolean> {
+  const number = pullUrl.split("/").pop();
+  let lists: Comment[][];
+  try {
+    lists = await Promise.all([`repos/${repo}/issues/${number}/comments`, `${pullUrl}/reviews`, `${pullUrl}/comments`]
+      .map((endpoint) => gh<Comment[]>(`${endpoint}?per_page=100`, { paginate: true, runner })));
+  } catch (error) {
+    if (isGone(error)) return false;
+    throw error;
+  }
+  const login = (await me.login()).replace(/[^A-Za-z0-9-]/g, "");
+  // The lookarounds keep e-mail addresses, URL paths and @reader-bot from counting as @reader.
+  const mention = new RegExp(`(?<![A-Za-z0-9_./-])@(${login}(?![A-Za-z0-9-])|[A-Za-z0-9-]+/[A-Za-z0-9_.-]+)`, "i");
+  return lists.flat().some((c) => c.user?.type !== "Bot" && mention.test(c.body ?? ""));
+}
+
+/**
+ * Whether a mention in the last 90 days keeps an automated thread in the inbox. On a Renovate pull
+ * request any mention does. A release cannot be commented on, so a mention there is in notes a bot
+ * wrote, such as release-please crediting the reader. On a release-please pull request the
+ * changelog mentions the reader too, so only a person's mention counts.
+ */
+async function mentionKeeps(
+  thread: Thread,
+  origin: Origin,
+  mentionedAt: number | undefined,
+  me: Reader,
+  runner: Runner,
+): Promise<boolean> {
+  if (mentionedAt === undefined || origin === "release") return false;
+  if (origin !== "release-pr") return true;
+  return personMentions(thread.repository.full_name, thread.subject.url as string, me, runner);
 }
 
 export function notificationStatePath(): string {
@@ -214,22 +308,22 @@ export async function sweep({
     .filter(([, at]) => now - at < MENTION_KEEP_MS));
   const done: Thread[] = [];
   const errors: string[] = [];
+  const me = reader(runner);
   for (const thread of threads) {
     if (KEEP_REASONS.has(thread.reason)) mentioned[thread.id] = now;
-    if (mentioned[thread.id] !== undefined || decided[thread.id] === thread.updated_at) continue;
-    let author: string | null;
+    if (decided[thread.id] === thread.updated_at) continue;
+    let origin: Origin;
+    let keep: boolean;
     try {
-      author = await openedBy(thread, runner);
+      origin = await originOf(thread, me, runner);
+      keep = origin !== null && await mentionKeeps(thread, origin, mentioned[thread.id], me, runner);
     } catch (error) {
       errors.push(`${thread.repository.full_name} ${thread.subject.title}: ${(error as Error).message}`);
       continue;
     }
-    if (author === null || !AUTHORS.has(author)) {
-      decided[thread.id] = thread.updated_at;
-      continue;
-    }
-    if (!dryRun) await markDone(thread.id, runner);
     decided[thread.id] = thread.updated_at;
+    if (origin === null || keep) continue;
+    if (!dryRun) await markDone(thread.id, runner);
     done.push(thread);
     const number = thread.subject.url?.split("/").pop();
     log(`${dryRun ? "would clear" : "cleared"} ${thread.repository.full_name} ${thread.subject.type} ${number} (${thread.reason}) ${thread.subject.title}`);
