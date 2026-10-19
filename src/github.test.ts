@@ -156,6 +156,44 @@ describe("gh", () => {
     await gh("x", { runner });
     assert.deepEqual(calls[0]!.slice(-2), ["--cache", "0"]);
   });
+
+  /** Fails with each error in turn, then answers {"ok":true}. */
+  const failing = (...errors: string[]) => {
+    let calls = 0;
+    const runner = async () => {
+      const error = errors[calls++];
+      if (error !== undefined) throw new Error(`Command failed: gh api x --cache 0\n${error}`);
+      return { stdout: '{"ok":true}' };
+    };
+    return { runner, calls: () => calls };
+  };
+
+  test("retries a server error", async () => {
+    const f = failing("gh: Server Error (HTTP 502)", "gh: Service Unavailable (HTTP 503)");
+    assert.deepEqual(await gh("x", { runner: f.runner, retryDelayMs: 0 }), { ok: true });
+    assert.equal(f.calls(), 3);
+  });
+
+  test("gives up after three server errors", async () => {
+    const f = failing(...Array(3).fill("gh: Server Error (HTTP 502)"));
+    await assert.rejects(gh("x", { runner: f.runner, retryDelayMs: 0 }), /HTTP 502/);
+    assert.equal(f.calls(), 3);
+  });
+
+  test("does not retry a client error, or a 5 in the endpoint", async () => {
+    for (const error of ["gh: Not Found (HTTP 404)", "gh: Bad credentials (HTTP 401)", "gh api repos/o/r/pulls/502: not logged in"]) {
+      const f = failing(error);
+      await assert.rejects(gh("x", { runner: f.runner, retryDelayMs: 0 }));
+      assert.equal(f.calls(), 1, error);
+    }
+  });
+
+  test("waits longer before each retry", async () => {
+    const f = failing("gh: Server Error (HTTP 502)", "gh: Server Error (HTTP 502)");
+    const started = Date.now();
+    await gh("x", { runner: f.runner, retryDelayMs: 20 });
+    assert.ok(Date.now() - started >= 55, "20 ms, then 40 ms");
+  });
 });
 
 describe("fileContents", () => {

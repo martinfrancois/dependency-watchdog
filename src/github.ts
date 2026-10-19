@@ -17,26 +17,46 @@ export const GH_EXEC_OPTIONS = { maxBuffer: 64 * 1024 * 1024, timeout: 30_000 };
 export const defaultRunner: Runner = (cmd, args) => execFileAsync(cmd, args, GH_EXEC_OPTIONS);
 
 /**
+ * Attempts for a call GitHub answers with a server error. Fired in a burst, the actions job lookups
+ * drew a 502 on two or three of them in every full run, while the same calls made one at a time all
+ * succeeded. Every call through gh() is a GET, so repeating one is safe.
+ */
+const ATTEMPTS = 3;
+
+/**
  * Call the GitHub API through the `gh` CLI.
  *
  * gh is already authenticated on this machine and refreshes its own token, so there is no PAT to
  * store, rotate, or leak into this repository. If that auth ever lapses, every call here throws,
  * the run aborts before pinging healthchecks.io, and the dead-man's switch fires. That is the
  * intended behaviour: a blind watchdog must not look healthy.
+ *
+ * A server error is retried after `retryDelayMs`, then twice that. Anything else, a 4xx included,
+ * throws at once, because repeating it would give the same answer.
  */
 export async function gh<T = unknown>(
   endpoint: string,
   {
     paginate = false,
     runner = defaultRunner,
-  }: { paginate?: boolean; runner?: Runner } = {},
+    retryDelayMs = 1000,
+  }: { paginate?: boolean; runner?: Runner; retryDelayMs?: number } = {},
 ): Promise<T> {
   const args = ["api", endpoint, "--cache", "0"];
   if (paginate) args.push("--paginate", "--slurp");
-  const { stdout } = await runner("gh", args);
-  const parsed = JSON.parse(stdout);
-  // --slurp wraps each page in an array; flatten so callers see one list.
-  return (paginate && Array.isArray(parsed) ? parsed.flat() : parsed) as T;
+  for (let attempt = 1; ; attempt++) {
+    let stdout: string;
+    try {
+      ({ stdout } = await runner("gh", args));
+    } catch (error) {
+      if (attempt >= ATTEMPTS || !/\(HTTP 5\d\d\)/.test((error as Error).message)) throw error;
+      await new Promise((resolve) => setTimeout(resolve, retryDelayMs * attempt));
+      continue;
+    }
+    const parsed = JSON.parse(stdout);
+    // --slurp wraps each page in an array; flatten so callers see one list.
+    return (paginate && Array.isArray(parsed) ? parsed.flat() : parsed) as T;
+  }
 }
 
 /** Fetch a file's decoded contents, or null when it does not exist on that ref. */
