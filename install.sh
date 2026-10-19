@@ -8,6 +8,7 @@
 #
 # Environment:
 #   ENABLE_PRUNE=0          install the watchdog only, leave the prune disabled
+#   ENABLE_NOTIFICATIONS=1  also clear Renovate threads from your GitHub notification inbox
 #   DEP_WATCHDOG_CONFIG_DIR override the config directory (default $XDG_CONFIG_HOME/dep-watchdog)
 set -euo pipefail
 
@@ -97,6 +98,14 @@ if [ "${ENABLE_PRUNE:-1}" = "1" ]; then
   say "both timers enabled"
 else
   say "watchdog enabled; prune left disabled (ENABLE_PRUNE=0)"
+fi
+# Off unless asked for: it marks the operator's own notifications done, which an install script
+# must not start doing by surprise. The unit can only write its state directory, which it names
+# as %h/.local/state/dep-watchdog, so create exactly that one.
+if [ "${ENABLE_NOTIFICATIONS:-0}" = "1" ]; then
+  mkdir -p "$HOME/.local/state/dep-watchdog"
+  systemctl --user enable --now dep-notifications.timer
+  say "notification sweep enabled"
 fi
 
 echo

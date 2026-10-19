@@ -1,0 +1,12 @@
+[Unit]
+Description=Clear dependency update notifications every minute
+
+[Timer]
+OnBootSec=2min
+# GitHub's X-Poll-Interval for notifications is 60 seconds. The sweep also honours a larger value
+# by skipping polls until it has passed.
+OnUnitInactiveSec=1min
+Unit=dep-notifications.service
+
+[Install]
+WantedBy=timers.target
