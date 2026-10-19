@@ -48,10 +48,11 @@ export type Thread = {
 /**
  * Where the last poll left off.
  *
- * `cleared` maps a thread id to the updated_at it had when it was cleared. The listing has to ask
- * for read threads too, since opening a pull request or its email marks the thread read without
- * removing it from the inbox, and GitHub's listing then also returns threads already marked done.
- * Remembering what was cleared is what stops every poll from looking them all up again.
+ * `decided` maps a thread id to the updated_at it had when the sweep last looked it up, whether it
+ * was cleared or kept. The listing has to ask for read threads too, since opening a pull request or
+ * its email marks the thread read without removing it from the inbox, and GitHub's listing then
+ * also returns threads already marked done. Remembering every decision is what stops each poll
+ * from looking up the same threads again while they stay inside the listing window.
  *
  * `mentioned` maps a thread id to when it last carried a mention. A thread's reason only reflects
  * its latest event, so a Renovate rebase after a mention would otherwise make the mention look
@@ -61,7 +62,7 @@ export type SweepState = {
   lastModified?: string;
   nextPollAt?: number;
   listedAt?: number;
-  cleared?: Record<string, string>;
+  decided?: Record<string, string>;
   mentioned?: Record<string, number>;
 };
 
@@ -207,7 +208,7 @@ export async function sweep({
   const threads = await gh<Thread[]>(`notifications?all=true&per_page=50${query}`, { paginate: true, runner });
 
   // A thread last updated before this listing's start cannot come back unchanged, so its entry goes.
-  const cleared = Object.fromEntries(Object.entries(state.cleared ?? {})
+  const decided = Object.fromEntries(Object.entries(state.decided ?? {})
     .filter(([, updated]) => since === undefined || Date.parse(updated) >= since));
   const mentioned = Object.fromEntries(Object.entries(state.mentioned ?? {})
     .filter(([, at]) => now - at < MENTION_KEEP_MS));
@@ -215,7 +216,7 @@ export async function sweep({
   const errors: string[] = [];
   for (const thread of threads) {
     if (KEEP_REASONS.has(thread.reason)) mentioned[thread.id] = now;
-    if (mentioned[thread.id] !== undefined || cleared[thread.id] === thread.updated_at) continue;
+    if (mentioned[thread.id] !== undefined || decided[thread.id] === thread.updated_at) continue;
     let author: string | null;
     try {
       author = await openedBy(thread, runner);
@@ -223,14 +224,17 @@ export async function sweep({
       errors.push(`${thread.repository.full_name} ${thread.subject.title}: ${(error as Error).message}`);
       continue;
     }
-    if (author === null || !AUTHORS.has(author)) continue;
+    if (author === null || !AUTHORS.has(author)) {
+      decided[thread.id] = thread.updated_at;
+      continue;
+    }
     if (!dryRun) await markDone(thread.id, runner);
-    cleared[thread.id] = thread.updated_at;
+    decided[thread.id] = thread.updated_at;
     done.push(thread);
     const number = thread.subject.url?.split("/").pop();
     log(`${dryRun ? "would clear" : "cleared"} ${thread.repository.full_name} ${thread.subject.type} ${number} (${thread.reason}) ${thread.subject.title}`);
   }
-  return { polled: true, cleared: done, errors, state: { ...polled, listedAt: now, cleared, mentioned } };
+  return { polled: true, cleared: done, errors, state: { ...polled, listedAt: now, decided, mentioned } };
 }
 
 /** DELETE marks a thread done, which removes it from the inbox until something new happens on it. */

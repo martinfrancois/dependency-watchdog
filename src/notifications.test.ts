@@ -214,15 +214,24 @@ describe("sweep", () => {
     assert.deepEqual(updated.deleted, ["1"]);
   });
 
+  test("a thread that was kept is not looked up again until it changes", async () => {
+    const gh = fakeGitHub([thread("2")], { "2": "someone" });
+    const first = await sweep({ state: {}, now: Date.parse(UPDATED), fetch: changed, runner: gh.runner, log: quiet });
+    const before = gh.calls.length;
+    await sweep({ state: first.state, now: Date.parse(UPDATED) + 60_000, fetch: changed, runner: gh.runner, log: quiet });
+    assert.deepEqual(gh.calls.slice(before).filter((c) => !c.startsWith("notifications")), []);
+    assert.deepEqual(gh.deleted, []);
+  });
+
   test("later listings start ten minutes before the previous one and forget older decisions", async () => {
     const gh = fakeGitHub([], {});
     const listedAt = Date.parse("2026-10-19T13:20:00Z");
     const report = await sweep({
-      state: { listedAt, cleared: { old: "2026-10-19T13:00:00Z", recent: "2026-10-19T13:15:00Z" } },
+      state: { listedAt, decided: { old: "2026-10-19T13:00:00Z", recent: "2026-10-19T13:15:00Z" } },
       now: listedAt + 60_000, fetch: changed, runner: gh.runner,
     });
     assert.equal(gh.calls[0], "notifications?all=true&per_page=50&since=2026-10-19T13:10:00.000Z");
-    assert.deepEqual(report.state.cleared, { recent: "2026-10-19T13:15:00Z" });
+    assert.deepEqual(report.state.decided, { recent: "2026-10-19T13:15:00Z" });
     assert.equal(report.state.listedAt, listedAt + 60_000);
   });
 
@@ -230,7 +239,7 @@ describe("sweep", () => {
     const gh = fakeGitHub([thread("1")], { "1": "renovate[bot]" });
     const seen: Record<string, string>[] = [];
     const notModified: Fetch = async (_e, headers) => { seen.push(headers); return response(304, { "X-Poll-Interval": "60" }); };
-    const state = { lastModified, listedAt: 5, cleared: { "1": UPDATED } };
+    const state = { lastModified, listedAt: 5, decided: { "1": UPDATED } };
     const report = await sweep({ state, now: 1_000, fetch: notModified, runner: gh.runner });
     assert.deepEqual(seen, [{ "If-Modified-Since": lastModified }]);
     assert.equal(gh.calls.length, 0);
@@ -271,7 +280,7 @@ describe("sweep", () => {
     assert.deepEqual(gh.deleted, ["2"]);
     assert.equal(report.errors.length, 1);
     assert.match(report.errors[0]!, /^o\/r PR 1: .*401/);
-    assert.equal(report.state.cleared?.["1"], undefined, "retried on the next listing");
+    assert.equal(report.state.decided?.["1"], undefined, "retried on the next listing");
   });
 
   test("an unexpected status fails the run", async () => {
@@ -291,8 +300,8 @@ describe("markDone", () => {
 describe("sweep state", () => {
   test("round-trips through the state file", () => {
     const file = path.join(mkdtempSync(path.join(tmpdir(), "sweep-")), "nested", "notifications.json");
-    saveSweepState({ lastModified, nextPollAt: 5, cleared: { "1": UPDATED } }, file);
-    assert.deepEqual(loadSweepState(file), { lastModified, nextPollAt: 5, cleared: { "1": UPDATED } });
+    saveSweepState({ lastModified, nextPollAt: 5, decided: { "1": UPDATED } }, file);
+    assert.deepEqual(loadSweepState(file), { lastModified, nextPollAt: 5, decided: { "1": UPDATED } });
   });
 
   test("a missing or corrupt file starts fresh", () => {
