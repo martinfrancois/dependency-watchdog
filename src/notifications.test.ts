@@ -9,29 +9,48 @@ import {
   interpret,
   loadSweepState,
   markDone,
-  openedBy,
+  originOf,
   parseResponse,
+  personMentions,
+  reader,
   saveSweepState,
   sweep,
   type Fetch,
+  type Reader,
   type Response,
   type Thread,
 } from "./notifications.ts";
 
 const UPDATED = "2026-10-19T13:00:00Z";
+const API = "https://api.github.com/";
 
 const thread = (id: string, over: Partial<Thread> = {}): Thread => ({
   id,
   reason: "subscribed",
   updated_at: UPDATED,
-  subject: { type: "PullRequest", title: `PR ${id}`, url: `https://api.github.com/repos/o/r/pulls/${id}` },
+  subject: { type: "PullRequest", title: `PR ${id}`, url: `${API}repos/o/r/pulls/${id}` },
   repository: { full_name: "o/r" },
   ...over,
 });
 
-const release = (id: string, tag: string): Thread => thread(id, {
-  subject: { type: "Release", title: `Release ${tag}`, url: `https://api.github.com/repos/o/r/releases/${id}` },
+const release = (id: string): Thread => thread(id, {
+  subject: { type: "Release", title: `Release ${id}`, url: `${API}repos/o/r/releases/${id}` },
 });
+
+const pr = (login: string, type = login.endsWith("[bot]") ? "Bot" : "User", ref = "feature") =>
+  ({ user: { login, type }, head: { ref } });
+const releasePleasePr = pr("github-actions[bot]", "Bot", "release-please--branches--main");
+
+/**
+ * The GitHub objects a release thread resolves through: the release, its tag's commit, and the pull
+ * requests that merged that commit.
+ */
+const releaseRoutes = (id: string, author: { login: string; type: string } | null, pulls: unknown[]) => ({
+  [`repos/o/r/releases/${id}`]: { tag_name: `v${id}`, author },
+  [`repos/o/r/commits/v${id}`]: { sha: `sha${id}` },
+  [`repos/o/r/commits/sha${id}/pulls`]: pulls,
+});
+const actions = { login: "github-actions[bot]", type: "Bot" };
 
 const response = (status: number, headers: Record<string, string> = {}): Response => ({
   status,
@@ -40,11 +59,12 @@ const response = (status: number, headers: Record<string, string> = {}): Respons
 });
 
 /**
- * A fake gh: the inbox, who opened each pull request, which pull request merged each release tag,
- * and a record of every call made. A pull request number maps to an author or to the error its
- * lookup throws.
+ * A fake gh. `routes` maps an endpoint, without the API host or query, to the JSON it returns or
+ * the error it throws. The inbox listing returns `threads`, the authenticated user is "me", and "me"
+ * administers o/r unless `routes` says otherwise.
+ * Every call is recorded, so tests can assert what was and was not looked up.
  */
-function fakeGitHub(threads: Thread[], authors: Record<string, string | Error>, tags: Record<string, string> = {}) {
+function fakeGitHub(threads: Thread[], routes: Record<string, unknown> = {}) {
   const deleted: string[] = [];
   const calls: string[] = [];
   const runner: Runner = async (_cmd, args) => {
@@ -56,25 +76,22 @@ function fakeGitHub(threads: Thread[], authors: Record<string, string | Error>, 
     const endpoint = args[1]!;
     calls.push(endpoint);
     if (endpoint.startsWith("notifications")) return { stdout: JSON.stringify([threads]) };
-    const release = /\/releases\/(\d+)$/.exec(endpoint);
-    if (release) return { stdout: JSON.stringify({ tag_name: `tag-${release[1]}` }) };
-    const tag = /\/commits\/(tag-\d+)$/.exec(endpoint);
-    if (tag) return { stdout: JSON.stringify({ sha: `sha-${tag[1]}` }) };
-    const pulls = /\/commits\/sha-(tag-\d+)\/pulls$/.exec(endpoint);
-    if (pulls) {
-      const number = tags[pulls[1]!];
-      return { stdout: JSON.stringify(number === undefined ? [] : [{ user: { login: authors[number] } }]) };
-    }
-    const author = authors[endpoint.split("/").pop()!];
-    if (author instanceof Error) throw author;
-    return { stdout: JSON.stringify({ user: { login: author } }) };
+    const key = endpoint.replace(API, "").replace(/\?.*$/, "");
+    if (key === "user" && !("user" in routes)) return { stdout: JSON.stringify({ login: "me" }) };
+    if (key === "repos/o/r" && !(key in routes)) return { stdout: JSON.stringify({ permissions: { admin: true } }) };
+    if (!(key in routes)) throw new Error(`gh: Not Found (HTTP 404) for ${key}`);
+    const value = routes[key];
+    if (value instanceof Error) throw value;
+    return { stdout: JSON.stringify(value) };
   };
-  return { runner, deleted, calls };
+  const lookups = () => calls.filter((c) => !c.startsWith("notifications") && !c.startsWith("DELETE"));
+  return { runner, deleted, calls, lookups };
 }
 
 const lastModified = "Mon, 19 Oct 2026 13:28:39 GMT";
 const changed: Fetch = async () => response(200, { "Last-Modified": lastModified, "X-Poll-Interval": "60" });
 const quiet = () => {};
+const me = (administers = true): Reader => ({ login: async () => "me", administers: async () => administers });
 
 describe("parseResponse", () => {
   test("reads the status, headers and body of a 200", () => {
@@ -120,46 +137,141 @@ describe("interpret", () => {
   });
 });
 
-describe("openedBy", () => {
-  test("a pull request's author", async () => {
-    const gh = fakeGitHub([], { "7": "renovate[bot]" });
-    assert.equal(await openedBy(thread("7"), gh.runner), "renovate[bot]");
+describe("originOf", () => {
+  test("a Renovate pull request", async () => {
+    const gh = fakeGitHub([], { "repos/o/r/pulls/7": pr("renovate[bot]") });
+    assert.equal(await originOf(thread("7"), me(), gh.runner), "renovate");
   });
 
-  test("a release is attributed to the pull request that merged its tagged commit", async () => {
-    const gh = fakeGitHub([], { "7": "renovate[bot]", "8": "someone" }, { "tag-1": "7", "tag-2": "8" });
-    assert.equal(await openedBy(release("1", "tag-1"), gh.runner), "renovate[bot]");
-    assert.equal(await openedBy(release("2", "tag-2"), gh.runner), "someone");
+  test("a release-please pull request", async () => {
+    const gh = fakeGitHub([], { "repos/o/r/pulls/7": releasePleasePr });
+    assert.equal(await originOf(thread("7"), me(), gh.runner), "release-pr");
   });
 
-  test("a release whose commit was pushed without a pull request has no author", async () => {
-    const gh = fakeGitHub([], {});
-    assert.equal(await openedBy(release("3", "tag-3"), gh.runner), null);
+  test("a pull request from a person, or from another bot, comes from nobody it clears", async () => {
+    const gh = fakeGitHub([], {
+      "repos/o/r/pulls/7": pr("someone"),
+      "repos/o/r/pulls/8": pr("dependabot[bot]"),
+      // A person's branch named like release-please's is still a person's pull request.
+      "repos/o/r/pulls/9": pr("someone", "User", "release-please--branches--main"),
+    });
+    for (const id of ["7", "8", "9"]) assert.equal(await originOf(thread(id), me(), gh.runner), null);
+  });
+
+  test("a bot's release of a Renovate, release-please or own merge is automated", async () => {
+    const gh = fakeGitHub([], {
+      ...releaseRoutes("1", actions, [pr("renovate[bot]")]),
+      ...releaseRoutes("2", actions, [releasePleasePr]),
+      ...releaseRoutes("3", actions, [pr("me")]),
+    });
+    for (const id of ["1", "2", "3"]) assert.equal(await originOf(release(id), me(), gh.runner), "release", id);
+  });
+
+  test("the reader is only looked up when no Renovate pull request decides it", async () => {
+    const gh = fakeGitHub([], releaseRoutes("1", actions, [pr("renovate[bot]")]));
+    const unused: Reader = { login: async () => assert.fail("login looked up"), administers: async () => assert.fail("repository looked up") };
+    await originOf(release("1"), unused, gh.runner);
+  });
+
+  test("a release a person published, or one for someone else's merge, stays", async () => {
+    const gh = fakeGitHub([], {
+      ...releaseRoutes("1", { login: "me", type: "User" }, [pr("renovate[bot]")]),
+      ...releaseRoutes("2", actions, [pr("someone")]),
+      ...releaseRoutes("3", actions, []),
+      ...releaseRoutes("4", null, [pr("renovate[bot]")]),
+    });
+    for (const id of ["1", "2", "3", "4"]) assert.equal(await originOf(release(id), me(), gh.runner), null, id);
+  });
+
+  test("in a repository the reader does not administer, only Renovate counts", async () => {
+    const gh = fakeGitHub([], {
+      "repos/o/r/pulls/7": releasePleasePr,
+      ...releaseRoutes("1", actions, [releasePleasePr]),
+      ...releaseRoutes("2", actions, [pr("me")]),
+      ...releaseRoutes("3", actions, [pr("renovate[bot]")]),
+    });
+    assert.equal(await originOf(thread("7"), me(false), gh.runner), null);
+    assert.equal(await originOf(release("1"), me(false), gh.runner), null);
+    assert.equal(await originOf(release("2"), me(false), gh.runner), null);
+    assert.equal(await originOf(release("3"), me(false), gh.runner), "release");
   });
 
   test("issues and threads without a subject are never looked up", async () => {
-    const gh = fakeGitHub([], {});
-    assert.equal(await openedBy(thread("1", { subject: { type: "Issue", title: "t", url: "u" } }), gh.runner), null);
-    assert.equal(await openedBy(thread("1", { subject: { type: "PullRequest", title: "t", url: null } }), gh.runner), null);
+    const gh = fakeGitHub([]);
+    assert.equal(await originOf(thread("1", { subject: { type: "Issue", title: "t", url: "u" } }), me(), gh.runner), null);
+    assert.equal(await originOf(thread("1", { subject: { type: "PullRequest", title: "t", url: null } }), me(), gh.runner), null);
     assert.deepEqual(gh.calls, []);
   });
 
-  test("a pull request that no longer exists has no author", async () => {
-    const gh = fakeGitHub([], { "9": new Error("gh: Not Found (HTTP 404)") });
-    assert.equal(await openedBy(thread("9"), gh.runner), null);
+  test("a pull request that no longer exists comes from nobody", async () => {
+    const gh = fakeGitHub([], { "repos/o/r/pulls/9": new Error("gh: Not Found (HTTP 404)") });
+    assert.equal(await originOf(thread("9"), me(), gh.runner), null);
   });
 
   test("pull request 404 failing for another reason is still an error", async () => {
     // execFile puts the command line, and so the URL ending in /pulls/404, into the message.
-    const gh = fakeGitHub([], { "404": new Error("Command failed: gh api https://api.github.com/repos/o/r/pulls/404\ngh: Bad credentials (HTTP 401)") });
-    await assert.rejects(openedBy(thread("404"), gh.runner), /HTTP 401/);
+    const gh = fakeGitHub([], { "repos/o/r/pulls/404": new Error(`Command failed: gh api ${API}repos/o/r/pulls/404\ngh: Bad credentials (HTTP 401)`) });
+    await assert.rejects(originOf(thread("404"), me(), gh.runner), /HTTP 401/);
+  });
+});
+
+describe("reader", () => {
+  test("looks up the login and each repository once", async () => {
+    const gh = fakeGitHub([], { "repos/o/s": { permissions: { admin: false } } });
+    const r = reader(gh.runner);
+    assert.equal(await r.login(), "me");
+    assert.equal(await r.login(), "me");
+    assert.equal(await r.administers("o/r"), true);
+    assert.equal(await r.administers("o/r"), true);
+    assert.equal(await r.administers("o/s"), false);
+    assert.deepEqual(gh.lookups(), ["user", "repos/o/r", "repos/o/s"]);
+  });
+
+  test("a failed lookup is retried rather than remembered", async () => {
+    let fail = true;
+    const runner: Runner = async () => {
+      if (fail) { fail = false; throw new Error("gh: timeout"); }
+      return { stdout: JSON.stringify({ login: "me" }) };
+    };
+    const r = reader(runner);
+    await assert.rejects(r.login(), /timeout/);
+    assert.equal(await r.login(), "me");
+  });
+});
+
+describe("personMentions", () => {
+  const routes = (issue: unknown[], reviews: unknown[] = [], review: unknown[] = []) => ({
+    "repos/o/r/issues/5/comments": issue, "repos/o/r/pulls/5/reviews": reviews, "repos/o/r/pulls/5/comments": review,
+  });
+  const by = (type: string, body: string) => ({ user: { type }, body });
+
+  test("a person's comment, review or review comment that mentions the reader", async () => {
+    for (const r of [routes([by("User", "@me look")]), routes([], [by("User", "cc @ME")]), routes([], [], [by("User", "@me?")])]) {
+      assert.equal(await personMentions("o/r", `${API}repos/o/r/pulls/5`, me(), fakeGitHub([], r).runner), true);
+    }
+  });
+
+  test("a team mention counts", async () => {
+    assert.equal(await personMentions("o/r", `${API}repos/o/r/pulls/5`, me(), fakeGitHub([], routes([by("User", "@org/maintainers")])).runner), true);
+  });
+
+  test("a bot's mention, another login that starts like the reader's, or no mention, does not", async () => {
+    const r = routes([
+      by("Bot", "thanks @me"), by("User", "ask @me-bot"), by("User", "write to x@me.com"),
+      by("User", "see https://x.test/@me"), by("User", "looks fine"), { user: null, body: null },
+    ]);
+    assert.equal(await personMentions("o/r", `${API}repos/o/r/pulls/5`, me(), fakeGitHub([], r).runner), false);
+  });
+
+  test("a pull request deleted meanwhile has no mention", async () => {
+    assert.equal(await personMentions("o/r", `${API}repos/o/r/pulls/5`, me(), fakeGitHub([]).runner), false);
   });
 });
 
 describe("sweep", () => {
   test("clears Renovate threads and keeps a person's pull request", async () => {
     const gh = fakeGitHub([thread("1"), thread("2"), thread("3", { reason: "review_requested" })], {
-      "1": "renovate[bot]", "2": "someone", "3": "renovate[bot]",
+      "repos/o/r/pulls/1": pr("renovate[bot]"), "repos/o/r/pulls/2": pr("someone"), "repos/o/r/pulls/3": pr("renovate[bot]"),
     });
     const lines: string[] = [];
     const report = await sweep({ state: {}, now: 0, fetch: changed, runner: gh.runner, log: (l) => lines.push(l) });
@@ -168,63 +280,107 @@ describe("sweep", () => {
     assert.match(lines[0]!, /^cleared o\/r PullRequest 1 \(subscribed\)/);
   });
 
-  test("clears a release published by merging a Renovate pull request, not one from a person", async () => {
-    const gh = fakeGitHub([release("10", "tag-10"), release("11", "tag-11")], { "7": "renovate[bot]", "8": "someone" }, { "tag-10": "7", "tag-11": "8" });
+  test("clears automated releases and keeps the rest", async () => {
+    const gh = fakeGitHub([release("10"), release("11"), release("12")], {
+      ...releaseRoutes("10", actions, [pr("renovate[bot]")]),
+      ...releaseRoutes("11", actions, [pr("someone")]),
+      ...releaseRoutes("12", actions, [pr("me")]),
+    });
     await sweep({ state: {}, now: 0, fetch: changed, runner: gh.runner, log: quiet });
-    assert.deepEqual(gh.deleted, ["10"]);
+    assert.deepEqual(gh.deleted, ["10", "12"]);
+    assert.equal(gh.calls.filter((c) => c === "user").length, 1, "the reader is looked up once per run");
   });
 
   test("lists read threads too, since opening a pull request does not remove it from the inbox", async () => {
-    const gh = fakeGitHub([], {});
+    const gh = fakeGitHub([]);
     const seen: string[] = [];
     await sweep({ state: {}, now: 0, fetch: async (e) => { seen.push(e); return changed("", {}); }, runner: gh.runner });
     assert.match(seen[0]!, /all=true/);
     assert.match(gh.calls[0]!, /^notifications\?all=true/);
   });
 
-  test("a mention on a Renovate pull request is never looked up or cleared", async () => {
-    const gh = fakeGitHub([thread("1", { reason: "mention" })], { "1": "renovate[bot]" });
+  test("a mention on a Renovate pull request stays", async () => {
+    const gh = fakeGitHub([thread("1", { reason: "mention" })], { "repos/o/r/pulls/1": pr("renovate[bot]") });
     await sweep({ state: {}, now: 0, fetch: changed, runner: gh.runner, log: quiet });
     assert.deepEqual(gh.deleted, []);
-    assert.equal(gh.calls.length, 1, "only the listing");
+  });
+
+  test("a release-please pull request is cleared despite the mention in its changelog", async () => {
+    const gh = fakeGitHub([thread("5", { reason: "mention" })], {
+      "repos/o/r/pulls/5": releasePleasePr,
+      "repos/o/r/issues/5/comments": [], "repos/o/r/pulls/5/reviews": [], "repos/o/r/pulls/5/comments": [],
+    });
+    await sweep({ state: {}, now: 0, fetch: changed, runner: gh.runner, log: quiet });
+    assert.deepEqual(gh.deleted, ["5"]);
+  });
+
+  test("an automated release whose notes credit the reader is still cleared", async () => {
+    const gh = fakeGitHub([{ ...release("10"), reason: "mention" }], releaseRoutes("10", actions, [releasePleasePr]));
+    await sweep({ state: {}, now: 0, fetch: changed, runner: gh.runner, log: quiet });
+    assert.deepEqual(gh.deleted, ["10"]);
+  });
+
+  test("a release-please pull request in someone else's repository stays", async () => {
+    const gh = fakeGitHub([thread("5")], { "repos/o/r/pulls/5": releasePleasePr, "repos/o/r": { permissions: { admin: false } } });
+    await sweep({ state: {}, now: 0, fetch: changed, runner: gh.runner, log: quiet });
+    assert.deepEqual(gh.deleted, []);
+  });
+
+  test("a release-please pull request where a person mentions the reader stays", async () => {
+    const gh = fakeGitHub([thread("5", { reason: "mention" })], {
+      "repos/o/r/pulls/5": releasePleasePr,
+      "repos/o/r/issues/5/comments": [{ user: { type: "User" }, body: "@me can this ship?" }],
+      "repos/o/r/pulls/5/reviews": [], "repos/o/r/pulls/5/comments": [],
+    });
+    await sweep({ state: {}, now: 0, fetch: changed, runner: gh.runner, log: quiet });
+    assert.deepEqual(gh.deleted, []);
+  });
+
+  test("a release-please pull request without a mention is cleared without reading its comments", async () => {
+    const gh = fakeGitHub([thread("5")], { "repos/o/r/pulls/5": releasePleasePr });
+    await sweep({ state: {}, now: 0, fetch: changed, runner: gh.runner, log: quiet });
+    assert.deepEqual(gh.deleted, ["5"]);
+    assert.deepEqual(gh.lookups(), [`${API}repos/o/r/pulls/5`, "repos/o/r"]);
   });
 
   test("a thread stays protected after a mention even when a later event changes its reason", async () => {
-    const mentioned = fakeGitHub([thread("1", { reason: "mention" })], { "1": "renovate[bot]" });
+    const routes = { "repos/o/r/pulls/1": pr("renovate[bot]") };
+    const mentioned = fakeGitHub([thread("1", { reason: "mention" })], routes);
     const first = await sweep({ state: {}, now: 0, fetch: changed, runner: mentioned.runner, log: quiet });
-    const rebased = fakeGitHub([thread("1", { reason: "subscribed", updated_at: "2026-10-19T13:05:00Z" })], { "1": "renovate[bot]" });
+    const rebased = fakeGitHub([thread("1", { reason: "subscribed", updated_at: "2026-10-19T13:05:00Z" })], routes);
     await sweep({ state: first.state, now: 60_000, fetch: changed, runner: rebased.runner, log: quiet });
     assert.deepEqual(rebased.deleted, []);
   });
 
   test("a mention stops protecting a thread after 90 days", async () => {
-    const gh = fakeGitHub([thread("1")], { "1": "renovate[bot]" });
+    const gh = fakeGitHub([thread("1")], { "repos/o/r/pulls/1": pr("renovate[bot]") });
     await sweep({ state: { mentioned: { "1": 0 } }, now: 91 * 86_400_000, fetch: changed, runner: gh.runner, log: quiet });
     assert.deepEqual(gh.deleted, ["1"]);
   });
 
   test("a thread already cleared is not looked up again until it changes", async () => {
-    const gh = fakeGitHub([thread("1")], { "1": "renovate[bot]" });
+    const routes = { "repos/o/r/pulls/1": pr("renovate[bot]") };
+    const gh = fakeGitHub([thread("1")], routes);
     const first = await sweep({ state: {}, now: Date.parse(UPDATED), fetch: changed, runner: gh.runner, log: quiet });
-    const before = gh.calls.length;
+    const before = gh.lookups().length;
     await sweep({ state: first.state, now: Date.parse(UPDATED) + 60_000, fetch: changed, runner: gh.runner, log: quiet });
-    assert.deepEqual(gh.calls.slice(before).filter((c) => !c.startsWith("notifications")), []);
-    const updated = fakeGitHub([thread("1", { updated_at: "2026-10-19T13:02:00Z" })], { "1": "renovate[bot]" });
+    assert.equal(gh.lookups().length, before);
+    const updated = fakeGitHub([thread("1", { updated_at: "2026-10-19T13:02:00Z" })], routes);
     await sweep({ state: first.state, now: Date.parse(UPDATED) + 120_000, fetch: changed, runner: updated.runner, log: quiet });
     assert.deepEqual(updated.deleted, ["1"]);
   });
 
   test("a thread that was kept is not looked up again until it changes", async () => {
-    const gh = fakeGitHub([thread("2")], { "2": "someone" });
+    const gh = fakeGitHub([thread("2")], { "repos/o/r/pulls/2": pr("someone") });
     const first = await sweep({ state: {}, now: Date.parse(UPDATED), fetch: changed, runner: gh.runner, log: quiet });
-    const before = gh.calls.length;
+    const before = gh.lookups().length;
     await sweep({ state: first.state, now: Date.parse(UPDATED) + 60_000, fetch: changed, runner: gh.runner, log: quiet });
-    assert.deepEqual(gh.calls.slice(before).filter((c) => !c.startsWith("notifications")), []);
+    assert.equal(gh.lookups().length, before);
     assert.deepEqual(gh.deleted, []);
   });
 
   test("later listings start ten minutes before the previous one and forget older decisions", async () => {
-    const gh = fakeGitHub([], {});
+    const gh = fakeGitHub([]);
     const listedAt = Date.parse("2026-10-19T13:20:00Z");
     const report = await sweep({
       state: { listedAt, decided: { old: "2026-10-19T13:00:00Z", recent: "2026-10-19T13:15:00Z" } },
@@ -236,7 +392,7 @@ describe("sweep", () => {
   });
 
   test("a 304 lists nothing and keeps what was decided before", async () => {
-    const gh = fakeGitHub([thread("1")], { "1": "renovate[bot]" });
+    const gh = fakeGitHub([thread("1")]);
     const seen: Record<string, string>[] = [];
     const notModified: Fetch = async (_e, headers) => { seen.push(headers); return response(304, { "X-Poll-Interval": "60" }); };
     const state = { lastModified, listedAt: 5, decided: { "1": UPDATED } };
@@ -248,13 +404,13 @@ describe("sweep", () => {
 
   test("the first poll is unconditional", async () => {
     const seen: Record<string, string>[] = [];
-    const gh = fakeGitHub([], {});
+    const gh = fakeGitHub([]);
     await sweep({ state: {}, now: 0, fetch: async (_e, h) => { seen.push(h); return changed("", {}); }, runner: gh.runner });
     assert.deepEqual(seen, [{}]);
   });
 
   test("waits out a poll interval GitHub raised", async () => {
-    const gh = fakeGitHub([], {});
+    const gh = fakeGitHub([]);
     const slow: Fetch = async () => response(200, { "Last-Modified": lastModified, "X-Poll-Interval": "300" });
     const first = await sweep({ state: {}, now: 0, fetch: slow, runner: gh.runner });
     assert.equal(first.state.nextPollAt, 300_000);
@@ -266,7 +422,7 @@ describe("sweep", () => {
   });
 
   test("a dry run lists what it would clear and marks nothing", async () => {
-    const gh = fakeGitHub([thread("1")], { "1": "renovate[bot]" });
+    const gh = fakeGitHub([thread("1")], { "repos/o/r/pulls/1": pr("renovate[bot]") });
     const lines: string[] = [];
     const report = await sweep({ state: {}, now: 0, dryRun: true, fetch: changed, runner: gh.runner, log: (l) => lines.push(l) });
     assert.deepEqual(gh.deleted, []);
@@ -275,7 +431,9 @@ describe("sweep", () => {
   });
 
   test("a failed lookup is reported and the other threads are still cleared", async () => {
-    const gh = fakeGitHub([thread("1"), thread("2")], { "1": new Error("gh: Bad credentials (HTTP 401)"), "2": "renovate[bot]" });
+    const gh = fakeGitHub([thread("1"), thread("2")], {
+      "repos/o/r/pulls/1": new Error("gh: Bad credentials (HTTP 401)"), "repos/o/r/pulls/2": pr("renovate[bot]"),
+    });
     const report = await sweep({ state: {}, now: 0, fetch: changed, runner: gh.runner, log: quiet });
     assert.deepEqual(gh.deleted, ["2"]);
     assert.equal(report.errors.length, 1);
@@ -284,14 +442,14 @@ describe("sweep", () => {
   });
 
   test("an unexpected status fails the run", async () => {
-    const gh = fakeGitHub([], {});
+    const gh = fakeGitHub([]);
     await assert.rejects(sweep({ state: {}, now: 0, fetch: async () => response(500), runner: gh.runner }), /500/);
   });
 });
 
 describe("markDone", () => {
   test("refuses an id that is not a number, so nothing else can reach the DELETE", async () => {
-    const gh = fakeGitHub([], {});
+    const gh = fakeGitHub([]);
     await assert.rejects(markDone("1/../../user", gh.runner), /Unexpected notification thread id/);
     assert.equal(gh.calls.length, 0);
   });
