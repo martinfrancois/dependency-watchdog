@@ -400,7 +400,7 @@ journalctl --user -u dep-notifications.service -n 50 -o cat
 ```
 
 `~/.local/state/dep-watchdog/notifications.json` keeps the last `Last-Modified`, the next allowed
-poll time, the threads already cleared and the threads that carried a mention. Deleting it costs
+poll time, the threads already looked up and the threads that carried a mention. Deleting it costs
 one full listing, and forgets which threads were protected by a mention.
 
 ## Limitations

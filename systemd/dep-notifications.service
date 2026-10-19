@@ -9,8 +9,10 @@ ExecStart=/usr/bin/env node __REPO_DIR__/src/cli-notifications.ts
 # gh reads its token from here, so the unit needs the real HOME rather than a private one.
 Environment=HOME=%h
 Environment=PATH=__NODE_BIN__:%h/.local/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin
-# The timer fires every minute, so a hung call must end well before the next firing would matter.
-TimeoutStartSec=5min
+# A full listing, on the first run or after the state file is lost, looks up every thread in the
+# inbox and took 3.5 minutes for 240 threads. The timer only fires again after a run ends, so a long
+# run delays the next one rather than overlapping it.
+TimeoutStartSec=15min
 
 # The sweep only talks to GitHub and writes one state file.
 PrivateTmp=true
