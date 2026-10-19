@@ -1,0 +1,26 @@
+[Unit]
+Description=Clear dependency update threads from the GitHub notification inbox
+Documentation=https://github.com/martinfrancois/dependency-watchdog
+After=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/env node __REPO_DIR__/src/cli-notifications.ts
+# gh reads its token from here, so the unit needs the real HOME rather than a private one.
+Environment=HOME=%h
+Environment=PATH=__NODE_BIN__:%h/.local/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin
+# The timer fires every minute, so a hung call must end well before the next firing would matter.
+TimeoutStartSec=5min
+
+# The sweep only talks to GitHub and writes one state file.
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=read-only
+ReadWritePaths=%h/.local/state/dep-watchdog
+NoNewPrivileges=true
+RestrictSUIDSGID=true
+ProtectKernelTunables=true
+ProtectControlGroups=true
+
+[Install]
+WantedBy=default.target

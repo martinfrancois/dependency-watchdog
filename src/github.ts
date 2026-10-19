@@ -11,8 +11,10 @@ const execFileAsync = promisify(execFile);
  */
 export type Runner = (cmd: string, args: string[]) => Promise<{ stdout: string }>;
 
-const defaultRunner: Runner = (cmd, args) =>
-  execFileAsync(cmd, args, { maxBuffer: 64 * 1024 * 1024, timeout: 30_000 });
+/** Limits for every gh call: large paginated listings fit, and a hung call ends. */
+export const GH_EXEC_OPTIONS = { maxBuffer: 64 * 1024 * 1024, timeout: 30_000 };
+
+export const defaultRunner: Runner = (cmd, args) => execFileAsync(cmd, args, GH_EXEC_OPTIONS);
 
 /**
  * Call the GitHub API through the `gh` CLI.

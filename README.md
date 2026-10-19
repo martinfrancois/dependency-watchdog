@@ -6,6 +6,7 @@ incidents and prepares tested repairs.
 
 - **watchdog** reports persistent findings and sends weekly reminders. Inspect its run report to check coverage.
 - **prune** proposes a PR removing pnpm `minimumReleaseAgeExclude` or uv `exclude-newer-package` entries that have aged past the cooldown.
+- **notification sweep** (opt-in) marks Renovate pull request threads done in your GitHub notification inbox every minute. See [Notification sweep](#notification-sweep).
 - **recovery** calls an installed Codex CLI to investigate confirmed incidents. See [Codex recovery](docs/recovery.md).
 - **Tumbleweed mirror** is a GitHub Actions workflow, not a local job. It copies each openSUSE Tumbleweed snapshot to `ghcr.io/martinfrancois/tumbleweed` before registry.opensuse.org deletes it, so a snapshot pinned under the 7-day cooldown still exists when it is used. See [Tumbleweed mirror](docs/tumbleweed-mirror.md).
 
@@ -108,8 +109,9 @@ rather inject them.
 ### 6. Run it
 
 ```bash
-./install.sh                    # both jobs
-ENABLE_PRUNE=0 ./install.sh     # watchdog only, prune left disabled
+./install.sh                          # both jobs
+ENABLE_PRUNE=0 ./install.sh           # watchdog only, prune left disabled
+ENABLE_NOTIFICATIONS=1 ./install.sh   # both jobs plus the notification sweep
 ```
 
 It refuses while anything is still `PLACEHOLDER`, resolves the chat id, dry runs, installs the
@@ -364,6 +366,42 @@ Only the daily watchdog acknowledges its healthchecks.io heartbeat. The weekly p
 clear a failed watchdog heartbeat. Inspect the prune timer and `last-prune.json` when exclusion
 findings persist. `thresholds.exclusionGraceDays` defaults to seven days for the weekly timer; change
 it when changing the prune schedule.
+
+## Notification sweep
+
+GitHub notifies everyone watching a repository about every pull request Renovate opens, rebases
+or merges, and Renovate's `reviewers` setting adds a review request on top. Watch settings filter by
+event type (issues, pull requests, releases), never by author, so you cannot mute Renovate there
+without also muting pull requests from people.
+
+The sweep runs every minute and marks a thread done when its pull request was opened by
+`renovate[bot]`, and when a release was published by merging such a pull request. It looks at read
+threads too, because opening a pull request or its email marks the thread read but leaves it in the
+inbox. A thread where someone mentions you stays, and keeps staying for 90 days even after a later
+rebase changes the reason GitHub reports for it. Done threads come back if something new happens on
+them, and the next run clears them again.
+
+Each run first asks GitHub whether the inbox changed, using `If-Modified-Since` with the previous
+response's `Last-Modified`. GitHub answers `304 Not Modified` when it did not, and a 304 does not
+count against the API rate limit. A changed inbox costs a listing of the threads updated since the
+previous listing, plus one lookup per thread not decided before (three for a release). The sweep
+also honours `X-Poll-Interval`, which was 60 seconds when this was written.
+
+A lookup that fails, for example in a repository the `gh` token cannot read, is logged and the run
+carries on with the other threads, then exits non-zero so `systemctl --user status` shows it.
+
+It cleans the web inbox only. Emails and mobile pushes go out when the notification is created,
+before any sweep can see it, so filter those in your mail client, or remove `reviewers` from the
+Renovate config to stop review requests at the source.
+
+```bash
+node src/cli-notifications.ts --dry-run   # lists what it would clear, marks nothing, writes no state
+journalctl --user -u dep-notifications.service -n 50 -o cat
+```
+
+`~/.local/state/dep-watchdog/notifications.json` keeps the last `Last-Modified`, the next allowed
+poll time, the threads already cleared and the threads that carried a mention. Deleting it costs
+one full listing, and forgets which threads were protected by a mention.
 
 ## Limitations
 
