@@ -146,10 +146,19 @@ const isReleasePleasePr = (pr: Pull): boolean =>
   pr.user?.type === "Bot" && (pr.head?.ref?.startsWith("release-please--") ?? false);
 
 /**
+ * The prune pushes with the reader's gh token, so its pull requests are the reader's own and only
+ * their branch tells them apart. classify() still checks the author, so a person's branch named
+ * like the prune's stays theirs.
+ */
+const isPrunePr = (pr: Pull): boolean => pr.head?.ref?.startsWith(PRUNE_BRANCH_PREFIX) ?? false;
+
+/**
  * What automation a thread in one of the reader's repositories comes from:
  * - "renovate": a pull request Renovate opened.
  * - "release-pr": a release-please pull request, which picks up every merge, Renovate's included.
- * - "prune": a pull request the prune job opened as the reader, open or closed.
+ * - "prune": a pull request the prune job opened as the reader, open or closed. A person's comment
+ *   after the close does not keep it as it would keep "own-closed", since nobody is waiting on an
+ *   answer from the reader there; a person's mention still does.
  * - "release": a release a bot published for the merge of a Renovate or release-please pull
  *   request, or of one the reader opened.
  * - "own-closed": a closed pull request the reader opened that no other person has commented on or
@@ -198,13 +207,13 @@ export async function classify(thread: Thread, me: Reader, runner: Runner = defa
       const pr = await gh<Pull>(url, { runner });
       if (isDependencyBot(pr)) return { origin: "renovate" };
       if (isReleasePleasePr(pr)) return { origin: "release-pr" };
-      // The prune pushes with the reader's gh token, so its pull requests are the reader's own.
-      if (pr.head?.ref?.startsWith(PRUNE_BRANCH_PREFIX)) return pr.user?.login === await me.login() ? { origin: "prune" } : null;
-      if (pr.state !== "closed" || !pr.closed_at) return null;
+      const prune = isPrunePr(pr);
+      if (!prune && (pr.state !== "closed" || !pr.closed_at)) return null;
       const login = await me.login();
       if (pr.user?.login !== login) return null;
+      if (prune) return { origin: "prune" };
       const comments = await pullComments(repo, url, runner);
-      return answeredSince(comments, login, pr.closed_at) ? null : { origin: "own-closed", comments };
+      return answeredSince(comments, login, pr.closed_at!) ? null : { origin: "own-closed", comments };
     }
     const release = await gh<{ tag_name: string; author?: { type?: string } | null }>(url, { runner });
     if (release.author?.type !== "Bot") return null;
