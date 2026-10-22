@@ -4,6 +4,7 @@ import path from "node:path";
 
 import { loadSettings, statePath } from "./config.ts";
 import { defaultRunner, gh, GH_EXEC_OPTIONS, type Runner } from "./github.ts";
+import { PRUNE_BRANCH_PREFIX } from "./prune.ts";
 
 /**
  * Clears automated threads in the reader's own repositories from the GitHub notification inbox.
@@ -148,6 +149,7 @@ const isReleasePleasePr = (pr: Pull): boolean =>
  * What automation a thread in one of the reader's repositories comes from:
  * - "renovate": a pull request Renovate opened.
  * - "release-pr": a release-please pull request, which picks up every merge, Renovate's included.
+ * - "prune": a pull request the prune job opened as the reader, open or closed.
  * - "release": a release a bot published for the merge of a Renovate or release-please pull
  *   request, or of one the reader opened.
  * - "own-closed": a closed pull request the reader opened that no other person has commented on or
@@ -156,7 +158,7 @@ const isReleasePleasePr = (pr: Pull): boolean =>
  * Other repositories are never classified, because there the same threads are someone else's work,
  * such as an upstream release that ships the reader's fix.
  */
-export type Origin = "renovate" | "release-pr" | "release" | "own-closed";
+export type Origin = "renovate" | "release-pr" | "prune" | "release" | "own-closed";
 
 /** A thread's origin, with the pull request's comments when deciding it already fetched them. */
 export type Classified = { origin: Origin; comments?: Comment[] };
@@ -196,6 +198,8 @@ export async function classify(thread: Thread, me: Reader, runner: Runner = defa
       const pr = await gh<Pull>(url, { runner });
       if (isDependencyBot(pr)) return { origin: "renovate" };
       if (isReleasePleasePr(pr)) return { origin: "release-pr" };
+      // The prune pushes with the reader's gh token, so its pull requests are the reader's own.
+      if (pr.head?.ref?.startsWith(PRUNE_BRANCH_PREFIX)) return pr.user?.login === await me.login() ? { origin: "prune" } : null;
       if (pr.state !== "closed" || !pr.closed_at) return null;
       const login = await me.login();
       if (pr.user?.login !== login) return null;
@@ -258,8 +262,8 @@ export function personMentions(comments: Comment[], login: string): boolean {
  * Whether a mention in the last 90 days keeps an automated thread in the inbox. On a Renovate pull
  * request any mention does. A release cannot be commented on, so a mention there is in notes a bot
  * wrote, such as release-please crediting the reader. On a release-please pull request the
- * changelog mentions the reader, and on the reader's own pull requests review bots do, so there only
- * another person's mention counts. A pull request deleted meanwhile has none.
+ * changelog mentions the reader, and on the reader's own pull requests, prune ones included, review
+ * bots do, so there only another person's mention counts. A pull request deleted meanwhile has none.
  */
 async function mentionKeeps(
   thread: Thread,
@@ -273,6 +277,7 @@ async function mentionKeeps(
     case "renovate": return true;
     case "release": return false;
     case "release-pr":
+    case "prune":
     case "own-closed": {
       let list = comments;
       try {

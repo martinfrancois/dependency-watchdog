@@ -21,6 +21,7 @@ import {
   type Response,
   type Thread,
 } from "./notifications.ts";
+import { PRUNE_BRANCH_PREFIX } from "./prune.ts";
 
 const UPDATED = "2026-10-19T13:00:00Z";
 const API = "https://api.github.com/";
@@ -41,6 +42,7 @@ const release = (id: string): Thread => thread(id, {
 const pr = (login: string, type = login.endsWith("[bot]") ? "Bot" : "User", ref = "feature") =>
   ({ user: { login, type }, head: { ref } });
 const releasePleasePr = pr("github-actions[bot]", "Bot", "release-please--branches--main");
+const prunePr = { ...pr("me", "User", `${PRUNE_BRANCH_PREFIX}0123456789ab`), state: "open", closed_at: null };
 const CLOSED = "2026-10-19T12:00:00Z";
 const ownClosed = { ...pr("me"), state: "closed", closed_at: CLOSED };
 /** The comment, review and review comment lists of pull request 5. */
@@ -164,6 +166,19 @@ describe("originOf", () => {
       "repos/o/r/pulls/9": pr("someone", "User", "release-please--branches--main"),
     });
     for (const id of ["7", "8", "9"]) assert.equal(await originOf(thread(id), me(), gh.runner), null);
+  });
+
+  test("a prune pull request the reader opened, open or closed", async () => {
+    const gh = fakeGitHub([], {
+      "repos/o/r/pulls/5": prunePr,
+      "repos/o/r/pulls/6": { ...prunePr, state: "closed", closed_at: CLOSED },
+      // Someone else's branch named like the prune's is still their pull request.
+      "repos/o/r/pulls/7": { ...prunePr, user: { login: "someone", type: "User" } },
+    });
+    assert.equal(await originOf(thread("5"), me(), gh.runner), "prune");
+    assert.equal(await originOf(thread("6"), me(), gh.runner), "prune");
+    assert.equal(await originOf(thread("7"), me(), gh.runner), null);
+    assert.ok(gh.lookups().every((c) => !c.includes("/comments") && !c.includes("/reviews")), "no comments read without a mention");
   });
 
   test("a bot's release of a Renovate, release-please or own merge is automated", async () => {
@@ -407,6 +422,24 @@ describe("sweep", () => {
     const gh = fakeGitHub([thread("5", { reason: "mention" })], {
       "repos/o/r/pulls/5": ownClosed,
       ...commentRoutes([comment("someone", "2026-10-19T11:00:00Z", "@me why this way?")]),
+    });
+    await sweep({ owners: ["o"], state: {}, now: 0, fetch: changed, runner: gh.runner, log: quiet });
+    assert.deepEqual(gh.deleted, []);
+  });
+
+  test("a prune pull request is cleared despite a review bot's mention", async () => {
+    const gh = fakeGitHub([thread("5", { reason: "mention" })], {
+      "repos/o/r/pulls/5": prunePr,
+      ...commentRoutes([comment("coderabbitai[bot]", "2026-10-19T11:00:00Z", "@me review done")]),
+    });
+    await sweep({ owners: ["o"], state: {}, now: 0, fetch: changed, runner: gh.runner, log: quiet });
+    assert.deepEqual(gh.deleted, ["5"]);
+  });
+
+  test("a prune pull request where a person mentions the reader stays", async () => {
+    const gh = fakeGitHub([thread("5", { reason: "mention" })], {
+      "repos/o/r/pulls/5": prunePr,
+      ...commentRoutes([comment("someone", "2026-10-19T11:00:00Z", "@me is this safe?")]),
     });
     await sweep({ owners: ["o"], state: {}, now: 0, fetch: changed, runner: gh.runner, log: quiet });
     assert.deepEqual(gh.deleted, []);
