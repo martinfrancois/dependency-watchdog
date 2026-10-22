@@ -404,9 +404,12 @@ const publishCommand: PruneRunner = async (command, args, cwd) =>
 /** What a prune changed and how it was checked, as the commit and the PR should describe it. */
 export type PruneChange = { file: string; staged: string[]; validation: string };
 
+/** Every prune PR's branch starts with this, which is how the notification sweep recognises one. */
+export const PRUNE_BRANCH_PREFIX = "watchdog/prune-";
+
 export async function publishPrune(repo: string, dir: string, change: PruneChange, matured: string[], settings: Settings, execute: PruneRunner = publishCommand): Promise<string> {
   const { file } = change;
-  const branch = `watchdog/prune-${createHash("sha256").update(JSON.stringify([file, [...matured].sort()])).digest("hex").slice(0, 12)}`;
+  const branch = `${PRUNE_BRANCH_PREFIX}${createHash("sha256").update(JSON.stringify([file, [...matured].sort()])).digest("hex").slice(0, 12)}`;
   const existing = JSON.parse(await execute("gh", ["pr", "list", "--repo", repo, "--head", branch, "--state", "open", "--json", "url"], dir)) as { url: string }[];
   if (existing[0]) return existing[0].url;
   const base = (await execute("git", ["symbolic-ref", "--short", "refs/remotes/origin/HEAD"], dir)).replace(/^origin\//, "");

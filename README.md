@@ -381,6 +381,8 @@ it marks these threads done:
 
 - pull requests opened by `renovate[bot]`
 - release-please pull requests, which every merge updates
+- prune pull requests, open or closed. The prune opens them with your `gh` token, so they are
+  recognised by their `watchdog/prune-` branch and by being yours.
 - releases a bot published for the merge of a Renovate or release-please pull request, or of one
   you opened
 - closed pull requests you opened, unless another person commented on or reviewed one after it
@@ -394,9 +396,10 @@ The sweep looks at read threads too, because opening a pull request or its email
 read but leaves it in the inbox. A thread where someone mentions you stays, and keeps staying for 90
 days even after a later rebase changes the reason GitHub reports for it. Bots write your handle into
 changelogs and release notes, which GitHub also reports as a mention, and review bots do the same on
-your pull requests, so on a release-please pull request or one of your closed pull requests only
-another person's mention in a comment or review counts, and on a bot's release none does. Done
-threads come back if something new happens on them, and the next run clears them again.
+your pull requests, so on a release-please pull request, a prune pull request or one of your closed
+pull requests only another person's mention in a comment or review counts, and on a bot's release
+none does. Done threads come back if something new happens on them, and the next run clears them
+again.
 
 Each run first asks GitHub whether the inbox changed, using `If-Modified-Since` with the previous
 response's `Last-Modified`. GitHub answers `304 Not Modified` when it did not, and a 304 does not
