@@ -382,7 +382,8 @@ it marks these threads done:
 - pull requests opened by `renovate[bot]`
 - release-please pull requests, which every merge updates
 - prune pull requests, open or closed. The prune opens them with your `gh` token, so they are
-  recognised by their `watchdog/prune-` branch and by being yours.
+  recognised by their `watchdog/prune-` branch and by being yours. Unlike your other closed pull
+  requests, a person's comment after the close does not keep one; a mention does.
 - releases a bot published for the merge of a Renovate or release-please pull request, or of one
   you opened
 - closed pull requests you opened, unless another person commented on or reviewed one after it
@@ -422,6 +423,11 @@ journalctl --user -u dep-notifications.service -n 50 -o cat
 `~/.local/state/dep-watchdog/notifications.json` keeps the last `Last-Modified`, the next allowed
 poll time, the threads already looked up and the threads that carried a mention. Deleting it costs
 one full listing, and forgets which threads were protected by a mention.
+
+A run only looks at threads updated since the previous one, and never looks again at a thread it
+already decided on until something new happens there. A new rule therefore leaves the threads
+already in the inbox alone. To apply it to them, remove `listedAt`, `lastModified`, `nextPollAt`
+and `decided` from that file and keep `mentioned`; the next run then makes one full listing.
 
 ## Limitations
 

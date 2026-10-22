@@ -436,6 +436,15 @@ describe("sweep", () => {
     assert.deepEqual(gh.deleted, ["5"]);
   });
 
+  test("a closed prune pull request is cleared despite a person's comment after the close", async () => {
+    const gh = fakeGitHub([thread("5")], {
+      "repos/o/r/pulls/5": { ...prunePr, state: "closed", closed_at: CLOSED },
+      ...commentRoutes([comment("someone", "2026-10-19T12:01:00Z", "looks fine")]),
+    });
+    await sweep({ owners: ["o"], state: {}, now: 0, fetch: changed, runner: gh.runner, log: quiet });
+    assert.deepEqual(gh.deleted, ["5"]);
+  });
+
   test("a prune pull request where a person mentions the reader stays", async () => {
     const gh = fakeGitHub([thread("5", { reason: "mention" })], {
       "repos/o/r/pulls/5": prunePr,
