@@ -32,6 +32,16 @@ test("retention counts 60 days back from the newest snapshot and spares other ta
   assert.deepEqual(planRetention([version(6, "sha256:x", "latest")]), { expired: [], kept: [version(6, "sha256:x", "latest")] });
 });
 
+// mirror() deletes every expired version with no check before it, so this invariant is what stops an empty mirror.
+test("retention always keeps the version with the newest snapshot date", () => {
+  const cases: { versions: PackageVersion[]; newest: number }[] = [
+    { versions: [version(1, "sha256:only", "20261003")], newest: 1 },
+    { versions: [version(1, "sha256:old", "20240101"), version(2, "sha256:new", "20240101", "20261003"), version(3, "sha256:older", "20200101")], newest: 2 },
+    { versions: [version(1, "sha256:build", "20261003.37.215"), version(2, "sha256:new", "20261003"), version(3, "sha256:invalid", "20260230")], newest: 2 },
+  ];
+  for (const { versions, newest } of cases) assert.ok(planRetention(versions).kept.some((v) => v.id === newest), `version ${newest} expired`);
+});
+
 /** A fake registry pair and package API. Records every command so the tests can see what was written. */
 function world(opts: { upstream: Record<string, string>; packages: PackageVersion[] | null; copyDigest?: string; deleteFails?: string }) {
   const calls: string[][] = [];
