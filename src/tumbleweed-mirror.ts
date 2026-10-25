@@ -107,6 +107,7 @@ export async function mirror({ owner, now = Date.now(), dryRun = false, run = de
 
   const versions = await listVersions();
   const { expired, kept } = planRetention(versions);
+  if (kept.length === 0 && expired.length > 0) throw new Error("Retention would delete every tagged version; refusing");
   // Per-architecture manifests are untagged versions of their own; keep every one a kept index still references.
   const referenced = new Set<string>();
   for (const v of kept) {
