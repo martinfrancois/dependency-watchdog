@@ -1,10 +1,10 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, readdirSync, rmSync, realpathSync, symlinkSync } from "node:fs";
+import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, readdirSync, rmSync, realpathSync, symlinkSync, utimesSync } from "node:fs";
 import path from "node:path";
 import { DEFAULTS } from "./config.ts";
 import { enqueue, incidents, readIncident, saveIncident, rememberRecoverySettings, rememberedRecoverySettings, resolveExecutable, recoveryDirectory, retryIncident, writePrivate } from "./recovery-store.ts";
-import { executeCodex, verifyResult, runRecovery, queueWatchdogFailure, notifyIncident, refreshReview, reconcileIncidents } from "./recovery-runtime.ts";
+import { executeCodex, verifyResult, runRecovery, LOCK_STARTUP_GRACE_MS, queueWatchdogFailure, notifyIncident, refreshReview, reconcileIncidents } from "./recovery-runtime.ts";
 import { makeIncident, type RecoveryResult } from "./recovery.ts";
 
 const finding = { id: "x", repo: "o/r", kind: "failing", url: "https://github.com/o/r/pull/1" };
@@ -133,17 +133,27 @@ test("worker serializes jobs and recovers an interrupted investigation", async (
   const dir = mkdtempSync("/var/tmp/watchdog-worker-test-"); const prior = process.env.XDG_STATE_HOME; process.env.XDG_STATE_HOME = dir;
   try {
     const settings = { ...DEFAULTS.recovery, enabled: true };
+    const io = { save: saveIncident, notify: async () => {}, execute: async () => result, verify: async () => {} };
     const incident = makeIncident(finding); incident.status = "investigating"; saveIncident(incident);
-    await runRecovery({ settings, io: { save: saveIncident, notify: async () => {}, execute: async () => result, verify: async () => {} } });
+    await runRecovery({ settings, io });
     assert.equal(readIncident(incident.key)!.status, "review");
     const interrupted = makeIncident({ ...finding, id: "interrupted" });
     interrupted.status = "investigating"; interrupted.attempts = settings.maxAttempts; saveIncident(interrupted);
-    await runRecovery({ settings, io: { save: saveIncident, notify: async () => {}, execute: async () => result, verify: async () => {} } });
+    await runRecovery({ settings, io });
     assert.equal(readIncident(interrupted.key)!.status, "blocked");
     assert.ok(readIncident(interrupted.key)!.error!.includes(path.join(recoveryDirectory(), interrupted.key)));
     await runRecovery({ settings: { ...settings, enabled: false } });
-    mkdirSync(path.join(recoveryDirectory(), "worker.lock")); writeFileSync(path.join(recoveryDirectory(), "worker.lock", "pid"), String(process.pid));
+    const lock = path.join(recoveryDirectory(), "worker.lock");
+    mkdirSync(lock); writeFileSync(path.join(lock, "pid"), String(process.pid));
     await runRecovery({ settings });
+    rmSync(lock, { recursive: true });
+    const stranded = makeIncident({ ...finding, id: "stranded" }); stranded.status = "queued"; saveIncident(stranded);
+    mkdirSync(lock); writeFileSync(path.join(lock, "pid"), "");
+    await runRecovery({ settings, io });
+    assert.equal(readIncident(stranded.key)!.status, "queued", "a fresh lock may belong to a worker that has not written its pid yet");
+    const stale = new Date(Date.now() - 2 * LOCK_STARTUP_GRACE_MS); utimesSync(lock, stale, stale);
+    await runRecovery({ settings, io });
+    assert.equal(readIncident(stranded.key)!.status, "review");
   } finally { if (prior === undefined) delete process.env.XDG_STATE_HOME; else process.env.XDG_STATE_HOME = prior; rmSync(dir, { recursive: true, force: true }); }
 });
 
