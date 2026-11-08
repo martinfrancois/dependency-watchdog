@@ -180,7 +180,7 @@ function readRecoverySettings(): RecoverySettings {
     return rememberedRecoverySettings();
   }
 }
-// A lock without a usable pid is younger than this only while its worker is still starting.
+// A lock without a usable pid may belong to a worker that is still starting for this long.
 export const LOCK_STARTUP_GRACE_MS = 60_000;
 function processAlive(pid: number): boolean { try { process.kill(pid, 0); return true; } catch { return false; } }
 export async function runRecovery(options: { settings?: RecoverySettings; io?: import("./recovery-worker.ts").WorkerIO } = {}): Promise<void> {
