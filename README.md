@@ -45,13 +45,17 @@ The checkout can live anywhere; `install.sh` substitutes its own path into the s
 ### 1. Prerequisites
 
 ```bash
-node --version    # 24 or newer
+node --version    # 26 or newer
 gh auth status    # scopes: repo, workflow
 ```
 
-Node 24 is required, not merely recommended: the sources are TypeScript and are run directly by
+Node 26, the version CI tests, is required. The sources are TypeScript and are run directly by
 node's type stripping, with no build step and no compiler at runtime. There is nothing to transpile
 and nothing in `node_modules` that runs in production.
+
+The official Linux binaries of the required Node link against `libatomic.so.1`. Without it, `node` exits at
+start with "error while loading shared libraries: libatomic.so.1", so install the `libatomic1`
+package (Debian, Ubuntu, openSUSE) or `libatomic` (Fedora) first.
 
 The jobs authenticate through `gh` rather than a token you paste somewhere, so there is no
 long-lived secret in this repository and nothing to rotate. If that auth lapses, every API call
@@ -116,6 +120,10 @@ ENABLE_NOTIFICATIONS=1 ./install.sh   # both jobs plus the notification sweep
 
 It refuses while anything is still `PLACEHOLDER`, resolves the chat id, dry runs, installs the
 units, enables linger so the timers survive logout and reboot, and starts them.
+
+The units run the node that was on `PATH` when `install.sh` ran, by its directory. A version manager
+such as mise puts the version in that directory, so run `./install.sh` again after upgrading Node,
+or the timers keep the old version and fail once it is uninstalled.
 
 ### 7. Verify the part everyone skips
 

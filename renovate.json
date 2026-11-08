@@ -60,13 +60,13 @@
       "matchPackageNames": ["typescript", "@types/node"]
     },
     {
-      "description": "Keep engines a range. The global pin strategy applies to engines too and would turn >=24 into one exact version, while the README promises 24 or newer.",
+      "description": "Keep engines a range. The global pin strategy applies to engines too and would turn the range into one exact version, while the README promises that version or newer.",
       "matchManagers": ["npm"],
       "matchDepTypes": ["engines"],
       "rangeStrategy": "replace"
     },
     {
-      "description": "The node version is stated in three places that must agree: engines, .nvmrc and the README. Renovate can move .nvmrc on its own, so it is held for review rather than merged into a disagreement.",
+      "description": "The node version is stated in places that must agree: engines, .nvmrc, the README and install.sh's message. Renovate can move .nvmrc on its own, so it is held for review rather than merged into a disagreement.",
       "matchManagers": ["nvm"],
       "automerge": false,
       "addLabels": ["needs manual sync"]
