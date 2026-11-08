@@ -192,7 +192,9 @@ export async function runRecovery(options: { settings?: RecoverySettings; io?: i
   mkdirSync(recoveryDirectory(), { recursive: true, mode: 0o700 });
   try { mkdirSync(lock); } catch {
     const pidFile = path.join(lock, "pid");
-    if (existsSync(pidFile) ? processAlive(Number(readFileSync(pidFile, "utf8"))) : Date.now() - statSync(lock).mtimeMs < 60_000) return;
+    // An empty or partly written pid reads as 0 or NaN, and kill(0) would probe this worker's own process group.
+    const pid = existsSync(pidFile) ? Number(readFileSync(pidFile, "utf8")) : NaN;
+    if (Number.isInteger(pid) && pid > 0 ? processAlive(pid) : Date.now() - statSync(lock).mtimeMs < 60_000) return;
     rmSync(lock, { recursive: true });
     mkdirSync(lock);
   }
