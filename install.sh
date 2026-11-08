@@ -24,7 +24,7 @@ die() { printf '\n✗ %s\n' "$*" >&2; exit 1; }
 
 echo "Installing from $REPO_DIR"
 
-command -v node >/dev/null || die "node is not on PATH. Node 24+ is required."
+command -v node >/dev/null || die "node is not on PATH. Node 26+ is required."
 command -v gh   >/dev/null || die "the GitHub CLI (gh) is not on PATH."
 gh auth status >/dev/null 2>&1 || die "gh is not authenticated. Run: gh auth login"
 say "node $(node --version), gh authenticated"
@@ -37,7 +37,8 @@ NODE_BIN="$(dirname "$(command -v node)")"
 say "toolchain at $NODE_BIN"
 if ! PATH="$NODE_BIN:$PATH" command -v pnpm >/dev/null 2>&1; then
   say "warning: pnpm is not beside node. The prune will refuse to push pnpm workspace files."
-  say "         Install pnpm (corepack enable) if any watched repository uses one."
+  say "         If a watched repository uses pnpm, install it beside node. Node does not bundle"
+  say "         Corepack: npm install -g corepack, then corepack enable pnpm."
 fi
 
 # The uv prune runs uv inside bubblewrap so code it is handed cannot reach these credentials, and
