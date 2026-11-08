@@ -210,7 +210,7 @@ describe("render for a broken default branch", () => {
 
   test("does not leave a dangling age in the header", async () => {
     const out = await render(finding);
-    assert.ok(!out.includes("STUCK :"), out.split("\n")[0]);
+    assert.ok(!out.includes("STUCK :"), out.split("\n")[0]!);
     assert.ok(out.startsWith("🔴 default branch broken"));
   });
 
