@@ -266,7 +266,7 @@ describe("recentCommits", () => {
   test("asks for the requested branch and page size", async () => {
     const calls: string[][] = [];
     await recentCommits("o/r", "release/1.x", 7, async (_c, args) => { calls.push(args); return { stdout: "[]" }; });
-    assert.ok(calls[0]![1]!.includes("sha=release%2F1.x"), calls[0]![1]);
+    assert.ok(calls[0]![1]!.includes("sha=release%2F1.x"), calls[0]![1]!);
     assert.ok(calls[0]![1]!.includes("per_page=7"));
   });
 });
