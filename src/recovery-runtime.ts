@@ -180,6 +180,8 @@ function readRecoverySettings(): RecoverySettings {
     return rememberedRecoverySettings();
   }
 }
+// A lock without a usable pid is younger than this only while its worker is still starting.
+export const LOCK_STARTUP_GRACE_MS = 60_000;
 function processAlive(pid: number): boolean { try { process.kill(pid, 0); return true; } catch { return false; } }
 export async function runRecovery(options: { settings?: RecoverySettings; io?: import("./recovery-worker.ts").WorkerIO } = {}): Promise<void> {
   if (process.argv.includes("--status")) { console.log(JSON.stringify(incidents(), null, 2)); return; }
@@ -192,9 +194,9 @@ export async function runRecovery(options: { settings?: RecoverySettings; io?: i
   mkdirSync(recoveryDirectory(), { recursive: true, mode: 0o700 });
   try { mkdirSync(lock); } catch {
     const pidFile = path.join(lock, "pid");
-    // An empty or partly written pid reads as 0 or NaN, and kill(0) would probe this worker's own process group.
+    // An empty pid file reads as 0, and kill(0) would probe this worker's own process group.
     const pid = existsSync(pidFile) ? Number(readFileSync(pidFile, "utf8")) : NaN;
-    if (Number.isInteger(pid) && pid > 0 ? processAlive(pid) : Date.now() - statSync(lock).mtimeMs < 60_000) return;
+    if (Number.isInteger(pid) && pid > 0 ? processAlive(pid) : Date.now() - statSync(lock).mtimeMs < LOCK_STARTUP_GRACE_MS) return;
     rmSync(lock, { recursive: true });
     mkdirSync(lock);
   }
