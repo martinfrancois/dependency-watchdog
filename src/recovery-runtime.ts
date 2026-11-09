@@ -187,9 +187,15 @@ export async function runRecovery(options: { settings?: RecoverySettings; io?: i
   if (process.argv.includes("--status")) { console.log(JSON.stringify(incidents(), null, 2)); return; }
   const settings = options.settings ?? readRecoverySettings();
   if (!settings.enabled) return;
+  // These flags only queue work for the timer's next run of dep-recovery.service. systemd never
+  // starts a unit that is still running, so the timer and the rescue unit cannot both find a stale
+  // lock and both take it over. A manual run without flags can still meet the timer's worker.
   const retry = process.argv.indexOf("--retry");
-  if (retry !== -1) retryIncident(process.argv[retry + 1] ?? "");
-  if (process.argv.includes("--watchdog-failure")) queueWatchdogFailure("systemd reported a failed watchdog or prune service; inspect both journals and last-prune.json", settings);
+  if (retry !== -1) { retryIncident(process.argv[retry + 1] ?? ""); return; }
+  if (process.argv.includes("--watchdog-failure")) {
+    queueWatchdogFailure("systemd reported a failed watchdog or prune service; inspect both journals and last-prune.json", settings);
+    return;
+  }
   const lock = path.join(recoveryDirectory(), "worker.lock");
   mkdirSync(recoveryDirectory(), { recursive: true, mode: 0o700 });
   try { mkdirSync(lock); } catch {

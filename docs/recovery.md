@@ -25,10 +25,13 @@ Add this to the private `config.json`, replacing the repository and absolute pat
 
 Check `codex login status` and `gh auth status`, then rerun `./install.sh`. The installer adds a
 recovery timer and a watchdog failure handler. The timer checks the durable queue every minute
-when no worker is running. A watchdog or prune service failure also starts recovery through systemd's
-`OnFailure`, including failures that prevent the main CLI from starting. Recovery still requires
-its own modules, Node, and the host to work. The external heartbeat detects failures beyond that
-boundary.
+when no worker is running. A watchdog or prune service failure also queues recovery through systemd's
+`OnFailure`, including failures that prevent the main CLI from starting; the timer's next run picks
+it up. Of the installed units, only `dep-recovery.service` runs the worker, and systemd never starts
+it twice at once. For an immediate run, use `systemctl --user start dep-recovery.service`; a bare
+`node src/cli-recovery.ts` starts a worker outside systemd that can meet the timer's worker at a
+stale lock. Recovery still requires its own modules, Node, and the host to work. The external
+heartbeat detects failures beyond that boundary.
 
 ## Repair order
 
@@ -93,8 +96,9 @@ node src/cli-recovery.ts --retry INCIDENT_KEY
 ```
 
 `--status` only reads state. `--retry` accepts a blocked incident, archives its previous record,
-and queues a new attempt. Use it after addressing the reported blocker. Declared blockers stop the
-attempt immediately. Invalid results or failed independent verification retry up to `maxAttempts`.
+and queues a new attempt for the timer's next run. Use it after addressing the reported blocker.
+Declared blockers stop the attempt immediately. Invalid results or failed independent verification
+retry up to `maxAttempts`.
 A timeout terminates the Codex process group and reports the deadline and private log directory.
 A result returned after that deadline is rejected, including a successful exit during shutdown.
 Interrupted workers recover from persisted state and report their private log directory.
