@@ -277,6 +277,13 @@ or `exclude-newer-package` entries whose cutoff is. It validates the edited file
 other files changed, and reuses an open prune PR for the same entries. It respects Git hooks and
 leaves merging to the operator.
 
+The prune edits nothing but its own files. Comments, tests or ADRs elsewhere that still name a
+removed entry, or the `minimumReleaseAgeExclude` key once its last entry is gone, are listed in the
+PR body under "References to check" with their path and line, in a code block, capped at
+`REFERENCE_LIMIT` lines of `REFERENCE_WIDTH` characters in `src/prune.ts`. Lockfiles are not
+searched, because a matured version stays locked. A failed search is noted in the PR body and
+does not stop the prune.
+
 uv records the table in `uv.lock`, so a uv prune changes both files. It re-locks a copy of the
 edited `pyproject.toml` and the current `uv.lock` with `uv lock` and `uv lock --check`, and refuses
 to push unless every locked package version is unchanged and the new lock differs from the old one

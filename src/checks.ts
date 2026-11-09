@@ -218,6 +218,10 @@ export async function staleExclusions(
   ];
 }
 
+/** The pnpm workspace key that lists release-age exemptions. */
+export const PNPM_EXCLUDE_KEY = "minimumReleaseAgeExclude";
+export const isPnpmExcludeKey = (line: string): boolean => new RegExp(`^${PNPM_EXCLUDE_KEY}:\\s*$`).test(line);
+
 /**
  * Pull `name@version` items out of a minimumReleaseAgeExclude block.
  *
@@ -228,7 +232,7 @@ export async function staleExclusions(
  */
 export function parseExclusions(yamlText: string): string[] {
   const lines = yamlText.split("\n");
-  const start = lines.findIndex((l) => /^minimumReleaseAgeExclude:\s*$/.test(l));
+  const start = lines.findIndex(isPnpmExcludeKey);
   if (start === -1) return [];
 
   const out: string[] = [];

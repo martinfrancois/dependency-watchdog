@@ -12,7 +12,7 @@ import { promisify } from "node:util";
 
 import { loadSettings, workspaceFileFor, statePath } from "./config.ts";
 import type { Settings } from "./types.ts";
-import { parseExclusions, publishedAt } from "./checks.ts";
+import { isPnpmExcludeKey, parseExclusions, PNPM_EXCLUDE_KEY, publishedAt } from "./checks.ts";
 import {
   assertSameVersions, assertUvOutcome, describeUvEntry, expectedLockAfterPrune, isUvSettingsFile, maturedUvEntries, parseUvExclusions,
   assertVisible, PREFLIGHT, removeUvEntries, sandboxArgs, sandboxedUv, uvCooldownMs,
@@ -38,7 +38,7 @@ async function git(cwd: string, ...args: string[]): Promise<string> {
  */
 export function removeEntries(yamlText: string, doomed: string[]): string {
   const lines = yamlText.split("\n");
-  const start = lines.findIndex((l) => /^minimumReleaseAgeExclude:\s*$/.test(l));
+  const start = lines.findIndex(isPnpmExcludeKey);
   if (start === -1) return yamlText;
 
   const isItem = (l: string): boolean => /^\s+-\s/.test(l);
@@ -231,9 +231,15 @@ async function prunePnpm(repo: string, dir: string, file: string, text: string, 
   const prUrl = await publishPrune(repo, dir, {
     file,
     staged: [file],
+    searchFor: pnpmSearchTerms(matured, next),
     validation: "the edited YAML retains exactly the expected exclusions, and pnpm install --lockfile-only --ignore-scripts --ignore-pnpmfile accepts it without changing other files.",
   }, matured, settings);
   return { repo, pruned: matured, prUrl };
+}
+
+/** What a pnpm prune PR asks the reviewer to look for: the entries, and the key once removeEntries dropped it with its last entry. */
+export function pnpmSearchTerms(matured: string[], editedText: string): string[] {
+  return parseExclusions(editedText).length ? matured : [...matured, PNPM_EXCLUDE_KEY];
 }
 
 type PnpmRunner = (command: string, args: string[], options: { cwd: string; env: NodeJS.ProcessEnv }) => Promise<unknown>;
@@ -278,7 +284,7 @@ async function pruneUv(repo: string, dir: string, file: string, text: string, se
   const labels = matured.map(describeUvEntry);
   if (DRY_RUN) return { repo, pruned: labels, dryRun: true };
 
-  const lockFile = path.posix.join(path.posix.dirname(file), "uv.lock");
+  const lockFile = path.posix.join(path.posix.dirname(file), UV_LOCK);
   const lockBefore = readFileSync(path.join(dir, lockFile), "utf8");
   const names = matured.map((e) => e.name);
   const next = removeUvEntries(text, names);
@@ -299,6 +305,8 @@ async function pruneUv(repo: string, dir: string, file: string, text: string, se
   const prUrl = await publishPrune(repo, dir, {
     file,
     staged: changed,
+    // removeUvEntries keeps the table header, so unlike pnpm's key it is never removed.
+    searchFor: uvSearchTerms(names),
     validation: `the edited ${file} retains exactly the expected entries; uv lock and uv lock --check, run in a sandbox on a copy of both files, accept it; the re-locked ${lockFile} differs only by the removed entries, so every locked version is unchanged; and no other file changed.`,
   }, labels, settings);
   return { repo, pruned: labels, prUrl };
@@ -319,6 +327,8 @@ function which(command: string): string {
   throw new Error(`${command} is not on PATH`);
 }
 
+const UV_LOCK = "uv.lock";
+
 /** Run uv lock and uv lock --check in bubblewrap on a copy of the two files; return the new lock. */
 async function relockInSandbox(pyproject: string, lock: string, uvCommand: string, file: string): Promise<string> {
   let bwrap: string;
@@ -338,7 +348,7 @@ async function relockInSandbox(pyproject: string, lock: string, uvCommand: strin
     mkdirSync(work);
     mkdirSync(cache);
     writeFileSync(path.join(work, "pyproject.toml"), pyproject);
-    writeFileSync(path.join(work, "uv.lock"), lock);
+    writeFileSync(path.join(work, UV_LOCK), lock);
     // A system interpreter only, found with a system PATH and no project files, so neither the
     // operator's shell setup nor the repository steers the choice.
     const found = (await run(uv, ["python", "find", "--no-project", "--system"], {
@@ -365,7 +375,7 @@ async function relockInSandbox(pyproject: string, lock: string, uvCommand: strin
         throw new Error(`refusing to push: uv ${verb} the edited ${file}. ${String(error.stderr || error.message).trim().slice(0, 300)}`);
       });
     }
-    return readFileSync(path.join(work, "uv.lock"), "utf8");
+    return readFileSync(path.join(work, UV_LOCK), "utf8");
   } finally {
     rmSync(scratch, { recursive: true, force: true });
   }
@@ -401,8 +411,89 @@ export type PruneRunner = (command: string, args: string[], cwd: string) => Prom
 const publishCommand: PruneRunner = async (command, args, cwd) =>
   (await run(command, args, { cwd, timeout: 180_000, maxBuffer: 8 * 1024 * 1024 })).stdout.trim();
 
-/** What a prune changed and how it was checked, as the commit and the PR should describe it. */
-export type PruneChange = { file: string; staged: string[]; validation: string };
+/**
+ * What a prune changed and how it was checked, as the commit and the PR should describe it, and
+ * what the reviewer should search the rest of the repository for.
+ */
+export type PruneChange = { file: string; staged: string[]; validation: string; searchFor: string[] };
+
+/** A noisy repository could otherwise bury the rest of the PR body under its hits. */
+export const REFERENCE_LIMIT = 30;
+/** A minified file can match with a line of megabytes; GitHub rejects a body over 65,536 characters. */
+export const REFERENCE_WIDTH = 200;
+// A matured version legitimately stays locked, so lockfile hits are not leftovers.
+const LOCKFILES = ["pnpm-lock.yaml", UV_LOCK, "package-lock.json", "yarn.lock", "bun.lock"];
+
+/**
+ * `path:line:text` for every tracked line that still names a removed exemption or the removed key.
+ *
+ * The prune may only change its own files, and rewriting free text is not an edit it can parse and
+ * check, so comments, tests and ADRs that describe a removed exemption are listed in the PR for the
+ * reviewer instead. Run after the edit is written: the removed block is gone from the working tree,
+ * so only the text that stays behind matches. -i lets a uv name match however it is capitalised.
+ */
+export async function findStaleReferences(dir: string, needles: string[], execute: PruneRunner = publishCommand): Promise<string[]> {
+  if (!needles.length) return [];
+  const excluded = LOCKFILES.map((f) => `:(exclude,glob)**/${f}`);
+  // -z separates path, line number and text with NUL, so the name check sees only the text.
+  const args = ["-c", "grep.heading=false", "-c", "grep.column=false", "grep", "--no-color", "-z", "-n", "-I", "-F", "-i",
+    ...needles.flatMap((n) => ["-e", n]), "--", ".", ...excluded];
+  try {
+    const whole = needles.map(wholeName);
+    return (await execute("git", args, dir)).split("\n")
+      .map((hit) => hit.split("\0"))
+      .filter(([, , text]) => text !== undefined && whole.some((name) => name.test(text)))
+      .map((fields) => fields.join(":"));
+  } catch (error) {
+    // git grep exits 1 when nothing matches.
+    if ((error as { code?: unknown }).code === 1) return [];
+    throw error;
+  }
+}
+
+/**
+ * Matches the needle only where it is not part of a longer package name or version: grep -w
+ * treats "-" as a boundary, so example-pkg@1.2.3 would match other-example-pkg@1.2.3, and it
+ * would also take example-pkg@1.2.30 or "six" in "sixty" without the check after the name.
+ * A trailing period that ends a sentence still counts as a boundary.
+ */
+function wholeName(needle: string): RegExp {
+  const escaped = needle.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  return new RegExp(`(?<![A-Za-z0-9_.@/-])${escaped}(?![A-Za-z0-9_-]|\\.[A-Za-z0-9])`, "i");
+}
+
+/** uv treats "-", "_" and "." in a name as the same character (PEP 503), and prose uses all three. */
+export function uvSearchTerms(names: string[]): string[] {
+  return [...new Set(names.flatMap((name) => ["-", "_", "."].map((separator) => name.replaceAll(/[-_.]+/g, separator))))];
+}
+
+/** A fence one backtick longer than any run in the text, so a stray fence cannot close the block. */
+function codeBlock(text: string): string {
+  const longestRun = Math.max(2, ...(text.match(/`+/g) ?? []).map((run) => run.length));
+  const fence = "`".repeat(longestRun + 1);
+  return `${fence}\n${text}\n${fence}`;
+}
+
+/**
+ * The hits go in a code block, so an @mention, an issue number or a stray fence in a matched line
+ * is shown as text instead of notifying someone, linking an issue or swallowing the rest of the body.
+ */
+async function referencesSection(dir: string, needles: string[], execute: PruneRunner): Promise<string> {
+  let references: string[];
+  try { references = await findStaleReferences(dir, needles, execute); }
+  catch (error) {
+    // The list only helps the reviewer, so a failed search must not stop a validated prune.
+    return `\n\nThe search for leftover references to the removed exemptions failed:\n\n${codeBlock((error as Error).message.slice(0, REFERENCE_WIDTH))}`;
+  }
+  if (!references.length) return "";
+  const shown = references.slice(0, REFERENCE_LIMIT).map((r) => (r.length > REFERENCE_WIDTH ? `${r.slice(0, REFERENCE_WIDTH)}...` : r));
+  const more = references.length - shown.length;
+  // Only the prose is wrapped: a wrapped hit line would break its path.
+  return "\n\nReferences to check\n\n" +
+    wrapBody("These lines still mention a removed exemption or the removed key. The prune does not edit them; update or delete the ones about the exemption before merging. Lines that only use the package, such as imports, need no change.") +
+    `\n\n${codeBlock(shown.join("\n"))}` +
+    (more ? `\n\n${more} more not shown.` : "");
+}
 
 /** Every prune PR's branch starts with this, which is how the notification sweep recognises one. */
 export const PRUNE_BRANCH_PREFIX = "watchdog/prune-";
@@ -434,7 +525,7 @@ export async function publishPrune(repo: string, dir: string, change: PruneChang
   await execute("git", ["commit", "-q", "-m", title, "-m", body], dir);
   try { await execute("git", ["push", "-u", "origin", branch], dir); }
   catch (error) { throw new PrunePushRejected(`Push stopped for ${repo}: ${(error as Error).message}`); }
-  const prBody = `${body}\n\nThe operator reviews this PR before merging.`;
+  const prBody = `${body}${await referencesSection(dir, change.searchFor, execute)}\n\nThe operator reviews this PR before merging.`;
   return await execute("gh", ["pr", "create", "--repo", repo, "--base", base, "--head", branch, "--title", title, "--body", prBody], dir);
 }
 
