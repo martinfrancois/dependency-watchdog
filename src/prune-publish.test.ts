@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { publishPrune, PrunePushRejected, type PruneChange, type PruneRunner } from "./prune.ts";
 import { DEFAULTS } from "./config.ts";
 
-const pnpm = (file = "pnpm-workspace.yaml"): PruneChange => ({ file, staged: [file], validation: "pnpm accepts it." });
+const pnpm = (file = "pnpm-workspace.yaml"): PruneChange => ({ file, staged: [file], validation: "pnpm accepts it.", searchFor: [] });
 
 test("pruning submits a PR after checking the staged file and never bypasses hooks", async () => {
   const calls: { command: string; args: string[] }[] = [];
@@ -26,6 +26,7 @@ test("pruning submits a PR after checking the staged file and never bypasses hoo
   assert.match(body, /^Removes 1 release-age exemption from pnpm-workspace\.yaml/);
   assert.ok(!body.includes("operator reviews"), "process notes belong in the PR, not the commit");
   assert.match(calls.find((c) => c.args.includes("create"))!.args.at(-1)!, /operator reviews this PR/);
+  assert.ok(!calls.find((c) => c.args.includes("create"))!.args.at(-1)!.includes("References to check"), "no hits, no section");
 });
 test("an existing prune PR is reused without committing or pushing", async () => {
   let calls = 0;
@@ -52,7 +53,7 @@ test("a uv prune stages pyproject.toml and uv.lock together and says how it was 
     if (args.includes("--name-only")) return "uv.lock\npyproject.toml";
     return "https://github.com/o/r/pull/2";
   };
-  const change: PruneChange = { file: "pyproject.toml", staged: ["pyproject.toml", "uv.lock"], validation: "uv lock --check accepts it." };
+  const change: PruneChange = { file: "pyproject.toml", staged: ["pyproject.toml", "uv.lock"], validation: "uv lock --check accepts it.", searchFor: [] };
   await publishPrune("o/r", "/unused", change, ["ruff 2026-10-09T19:47:30Z"], DEFAULTS, run);
   assert.deepEqual(calls.find((c) => c.args[0] === "add")!.args, ["add", "pyproject.toml", "uv.lock"]);
   const body = calls.find((c) => c.args[0] === "commit")!.args.at(-1)!;
@@ -67,6 +68,6 @@ test("a uv prune refuses to commit when only one of its two files is staged", as
     if (args[0] === "commit") assert.fail("must not commit");
     return "origin/main";
   };
-  const change: PruneChange = { file: "pyproject.toml", staged: ["pyproject.toml", "uv.lock"], validation: "" };
+  const change: PruneChange = { file: "pyproject.toml", staged: ["pyproject.toml", "uv.lock"], validation: "", searchFor: [] };
   await assert.rejects(publishPrune("o/r", "/unused", change, ["ruff x"], DEFAULTS, run), /unexpected staged/);
 });
