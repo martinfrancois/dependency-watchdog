@@ -1,0 +1,32 @@
+name: Bug report
+description: Report something that doesn't work as documented.
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: Leave out tokens, passwords, private paths, host names, Telegram ids, healthchecks.io URLs, the repositories you monitor and other personal data, also from logs and screenshots. Use the placeholders from `config.example.json` and `config.env.example` instead.
+  - type: textarea
+    id: summary
+    attributes:
+      label: What happened
+      description: What you saw, and what you expected instead.
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+      description: The command, for example `node src/cli-watchdog.ts --dry-run`, and a small `config.json` with placeholder values that shows the problem.
+    validations:
+      required: true
+  - type: textarea
+    id: environment
+    attributes:
+      label: Environment
+      description: Commit, operating system, Node, pnpm, uv and `gh` versions, and anything else that matters here.
+  - type: textarea
+    id: logs
+    attributes:
+      label: Output or logs
+      description: The command output or the `journalctl --user -u dep-watchdog.service` lines, with private details replaced.
+      render: text
