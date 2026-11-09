@@ -9,8 +9,7 @@ Environment=HOME=%h
 Environment=DEP_WATCHDOG_CONFIG_DIR=__CONFIG_DIR__
 Environment=PATH=__NODE_BIN__:%h/.local/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin
 Environment=DEP_WATCHDOG_RECOVERY=1
-TimeoutStartSec=6h
-KillMode=control-group
+TimeoutStartSec=5min
 UMask=0077
 NoNewPrivileges=true
 RestrictSUIDSGID=true

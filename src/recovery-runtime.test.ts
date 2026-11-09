@@ -157,6 +157,26 @@ test("worker serializes jobs and recovers an interrupted investigation", async (
   } finally { if (prior === undefined) delete process.env.XDG_STATE_HOME; else process.env.XDG_STATE_HOME = prior; rmSync(dir, { recursive: true, force: true }); }
 });
 
+test("--watchdog-failure and --retry queue work for the timer's worker instead of running one", async () => {
+  const dir = mkdtempSync("/var/tmp/watchdog-flags-test-"); const prior = process.env.XDG_STATE_HOME; process.env.XDG_STATE_HOME = dir;
+  const argv = process.argv;
+  try {
+    // Any executable will do: without one, enqueue blocks the incident instead of queueing it.
+    const settings = { ...DEFAULTS.recovery, enabled: true, codexCommand: process.execPath };
+    const io = { save: saveIncident, notify: async () => {}, execute: async () => {}, verify: async () => {} };
+    process.argv = [...argv, "--watchdog-failure"];
+    await runRecovery({ settings, io });
+    const queued = incidents().find((i) => i.finding.id === `watchdog-failure:${settings.watchdogRepo}`)!;
+    assert.deepEqual([queued.status, queued.attempts], ["queued", 0]);
+    const blocked = readIncident(queued.key)!; blocked.status = "blocked"; saveIncident(blocked);
+    process.argv = [...argv, "--retry", queued.key];
+    await runRecovery({ settings, io });
+    const retried = readIncident(queued.key)!;
+    // A worker would have counted an attempt and moved the incident on from "queued".
+    assert.deepEqual([retried.status, retried.attempts], ["queued", 0]);
+  } finally { process.argv = argv; if (prior === undefined) delete process.env.XDG_STATE_HOME; else process.env.XDG_STATE_HOME = prior; rmSync(dir, { recursive: true, force: true }); }
+});
+
 test("terminal notifications are retried once without exposing secrets and fallback settings survive invalid config", async () => {
   const dir = mkdtempSync("/var/tmp/watchdog-notify-test-");
   const names = ["XDG_STATE_HOME", "DEP_WATCHDOG_CONFIG_DIR", "TELEGRAM_BOT_TOKEN", "TELEGRAM_CHAT_ID", "HEALTHCHECKS_PING_URL"];
