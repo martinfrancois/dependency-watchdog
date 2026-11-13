@@ -254,7 +254,7 @@ export function parseExclusions(yamlText: string): string[] {
   return out.filter(Boolean);
 }
 
-/** Publish time of `name@version`, or null when it cannot be determined. */
+/** Newest publish time in `name@version || version`, or null if any version cannot be dated. */
 export async function publishedAt(
   entry: string,
   registry = "https://registry.npmjs.org",
@@ -262,14 +262,15 @@ export async function publishedAt(
   const at = entry.lastIndexOf("@");
   if (at <= 0) return null;
   const name = entry.slice(0, at);
-  const version = entry.slice(at + 1);
-  if (!/^\d/.test(version)) return null;
+  const versions = entry.slice(at + 1).split("||").map((version) => version.trim());
+  if (versions.some((version) => !/^\d/.test(version))) return null;
   try {
     const res = await fetch(`${registry}/${name}`, { signal: AbortSignal.timeout(30_000) });
     if (!res.ok) return null;
     const data = (await res.json()) as { time?: Record<string, string> };
-    const iso = data.time?.[version];
-    return iso ? Date.parse(iso) : null;
+    const times = versions.map((version) => Date.parse(data.time?.[version] ?? ""));
+    // Keep the whole exclusion until every listed version has passed the cooldown.
+    return times.every(Number.isFinite) ? Math.max(...times) : null;
   } catch {
     return null;
   }

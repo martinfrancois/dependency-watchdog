@@ -13,6 +13,8 @@ import {
   type Deps,
 } from "./checks.ts";
 import { DEFAULTS } from "./config.ts";
+import { inspect } from "./diagnostics.ts";
+import { selectMatured } from "./prune.ts";
 import type { CheckRun, Commit, PullRequest, Settings } from "./types.ts";
 
 const settings: Settings = { ...DEFAULTS, repos: ["o/r"] };
@@ -48,6 +50,31 @@ describe("publishedAt", () => {
       await publishedAt("@scope/pkg@4.5.6"),
       Date.parse("2026-02-02T00:00:00.000Z"),
     );
+  });
+
+  test("dates a disjunction by its newest publication, regardless of version order", async () => {
+    stubRegistry({ time: {
+      "1.2.3": "2026-02-02T00:00:00.000Z",
+      "2.0.0": "2026-01-01T00:00:00.000Z",
+    } });
+    for (const versions of ["1.2.3 || 2.0.0", "2.0.0||1.2.3"]) {
+      assert.equal(await publishedAt(`@scope/pkg@${versions}`), Date.parse("2026-02-02T00:00:00.000Z"));
+    }
+  });
+
+  test("cannot date a disjunction if any version lacks a valid timestamp", async () => {
+    for (const timestamp of [undefined, "not a date"]) {
+      stubRegistry({ time: { "1.2.3": "2026-01-01T00:00:00.000Z", "2.0.0": timestamp } });
+      assert.equal(await publishedAt("pkg@1.2.3 || 2.0.0"), null);
+      assert.equal(await publishedAt("pkg@2.0.0 || 1.2.3"), null);
+    }
+  });
+
+  test("rejects empty or unsupported alternatives", async () => {
+    stubRegistry({ time: { "1.2.3": "2026-01-01T00:00:00.000Z" } });
+    for (const versions of ["1.2.3 ||", "|| 1.2.3", "1.2.3 || latest", "1.2.3 || ^2.0.0"]) {
+      assert.equal(await publishedAt(`pkg@${versions}`), null);
+    }
   });
 
   test("returns null when the version is absent from the registry", async () => {
@@ -196,6 +223,31 @@ describe("refreshMissing", () => {
 
 describe("staleExclusions", () => {
   const yaml = `minimumReleaseAgeExclude:\n  - old@1.0.0\n  - young@2.0.0\n`;
+
+  test("completes inspection and prunes a disjunction only after every version matures", async () => {
+    const entry = "@scope/pkg@1.2.3 || 2.0.0";
+    const cutoff = settings.thresholds.cooldownDays * DAY;
+    const now = Date.now();
+    const scanSettings = { ...settings, checks: {
+      securityPrs: false, failingPrs: false, lockfileRefresh: false,
+      staleExclusions: true, defaultBranchBroken: false,
+    } };
+    for (const age of [DAY, cutoff, 30 * DAY]) {
+      stubRegistry({ time: {
+        "1.2.3": new Date(now - 30 * DAY).toISOString(),
+        "2.0.0": new Date(now - age).toISOString(),
+      } });
+      const report = await inspect(scanSettings, { seen: {} }, deps({
+        fileContents: async () => `minimumReleaseAgeExclude:\n  - "${entry}"\n`,
+        publishedAt,
+      }));
+      assert.equal(report.complete, true);
+      assert.equal(report.checks.find((check) => check.check === "staleExclusions")!.status, "completed");
+      const expected = age >= cutoff ? [entry] : [];
+      assert.deepEqual(report.findings.flatMap((finding) => finding.entries ?? []), expected);
+      assert.deepEqual(await selectMatured([entry], cutoff, publishedAt, now), expected);
+    }
+  });
 
   test("reports only entries whose version has matured", async () => {
     const out = await staleExclusions("o/r", settings, deps({
